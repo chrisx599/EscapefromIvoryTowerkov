@@ -19,6 +19,7 @@ let hub = null, view = null, phase = 'loading', pending = false, uncertainMutati
 let busyRequests = 0;
 let uncertainRequest = null;
 const MUTATION_PATHS = new Set(['/api/new', '/api/hub/action', '/api/hub/return', '/api/expedition/action']);
+// Keep storage keys stable across title changes so pending requests and navigation survive.
 try {
   const saved = JSON.parse(sessionStorage.getItem('xuefa-pending-request') || 'null');
   if (MUTATION_PATHS.has(saved?.path) && typeof saved?.body?.requestId === 'string') {

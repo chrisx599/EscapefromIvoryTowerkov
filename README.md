@@ -1,6 +1,6 @@
-# 学阀 · 科研概率搜打撤
+# 逃离象牙塔夫 · Escape from Ivory Towerkov
 
-当前版本 v0.7.0，只保留正式科研工位和概率远征。无需 AI 模型或 Phaser。
+《逃离象牙塔夫》（Escape from Ivory Towerkov）是一款科研题材的概率搜打撤与生涯游戏。当前版本 v0.7.0，采用正式科研工位和概率远征，无需 AI 模型或 Phaser。
 
 ```sh
 npm install
@@ -18,7 +18,7 @@ npm start
 - 已穿戴装备不占仓库，备用副本占用。仓库可从 40 扩至 120，每次增加 20。
 - 默认只显示材料发现机会、探索压力和完整带回把握；详细概率可展开查看。
 
-当前入口为 `public/index.html`，规则主规格为 [REVAMP.md](REVAMP.md)，研究规则为 [RESEARCH.md](RESEARCH.md)，文档导航为 [SPEC.md](SPEC.md)。
+当前入口为 `public/index.html`，规则主规格为 [REVAMP.md](docs/REVAMP.md)，研究规则为 [RESEARCH.md](docs/RESEARCH.md)，文档导航为 [SPEC.md](docs/SPEC.md)。
 
 ## 存档与恢复
 

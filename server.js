@@ -286,5 +286,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`《学阀》 running at http://localhost:${PORT}`);
+  console.log(`《逃离象牙塔夫》 / Escape from Ivory Towerkov running at http://localhost:${PORT}`);
 });

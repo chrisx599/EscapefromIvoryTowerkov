@@ -1,4 +1,4 @@
-# 研究与生涯规则
+# 逃离象牙塔夫 · 研究与生涯规则
 
 状态：已实现。规则位于 `src/research.js`，局外库存和结算位于 `src/career.js`，远征位于 `src/probability-raid.js`。
 
