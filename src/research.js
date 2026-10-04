@@ -15,7 +15,9 @@ export const PROJECTS = {
   evaluate: { name: '模型评测', minStage: 0, engineering: 1, research: 1, capacity: 1, materials: { dataset: 1, wind: 1 }, cost: 40, credit: 45, grant: 100 },
   finetune: { name: '微调实验', minStage: 1, engineering: 2, research: 2, capacity: 2, materials: { dataset: 1, src_code: 1 }, cost: 80, credit: 80, grant: 180 },
 };
-const PREPARATIONS = { unpublished: 'dataset', preprint: 'wind', inside: 'wind', funding_tip: 'wind' };
+// Raw material equivalents are only consumed to fill the inputs of a successful
+// project start. Never rewrite warehouse stock: these items remain saleable.
+const MATERIAL_EQUIVALENTS = { dataset: ['unpublished'], wind: ['preprint', 'inside', 'funding_tip'] };
 export const STAGES = [
   { name: '本科生', papers: 0, credit: 0, skill: 1 },
   { name: '硕士生', papers: 1, credit: 30, skill: 2 },
@@ -67,7 +69,8 @@ export function normalizeResearch(value = {}, seed = 1) {
   })) : [];
   const raw = value.project;
   const project = raw && Object.hasOwn(PROJECTS, raw.type) && Object.hasOwn(DIRECTIONS, raw.direction) && typeof raw.id === 'string' ? {
-    id: raw.id, type: raw.type, direction: raw.direction, title: String(raw.title || PROJECTS[raw.type].name),
+    id: raw.id, type: raw.type, direction: raw.direction, automaticFit: raw.automaticFit === true,
+    title: String(raw.title || PROJECTS[raw.type].name),
     scope: Math.min(2, number(raw.scope)), quality: Math.min(100, number(raw.quality)), runs: number(raw.runs),
     // Old experiments really happened. Recover conservative evidence without
     // inventing successful runs, rewards, or advancing their current status.
@@ -96,8 +99,8 @@ export function normalizeResearch(value = {}, seed = 1) {
       const recordedPractice = knownPapers * 2 + (project?.type === key ? project.runs : 0);
       return [key, Math.min(METHOD_CAP, hasMethods ? number(value.methods[key]) : recordedPractice)];
     })),
-    // Preparation notes are knowledge from actually sorting materials. They
-    // remain useful if the physical item is sold, and are used by one project.
+    // Historical preparation is earned knowledge. Keep unused notes and active
+    // project preparation; new material handling happens within project start.
     prepared: Object.fromEntries(['dataset', 'wind'].map(key => [key, Math.min(8, number(value.prepared?.[key]))])),
     rng: (number(value.rng, seed) >>> 0) || 1,
     sequence: Math.max(number(value.sequence), ...papers.map(p => number(p.id.split('-').at(-1))), number(project?.id.split('-').at(-1))), papers,
@@ -161,6 +164,22 @@ function requirements(profile, type, scope = researchScope(profile, type)) {
 function materialReasons(profile, materials) {
   return Object.entries(materials).filter(([id, count]) => number(profile.stash[id]) < count).map(([id, count]) => `需要${ITEMS[id].name} ×${count}`);
 }
+function projectMaterials(profile, materials) {
+  const materialCounts = {}, materialSources = {}, materialPlan = {}, reasons = [];
+  for (const [material, count] of Object.entries(materials)) {
+    let missing = count;
+    materialSources[material] = [material, ...(MATERIAL_EQUIVALENTS[material] || [])].map(id => {
+      const available = number(profile.stash[id]);
+      const used = Math.min(missing, available);
+      missing -= used;
+      if (used) materialPlan[id] = (materialPlan[id] || 0) + used;
+      return { id, name: ITEMS[id].name, available, count: used, automatic: id !== material };
+    });
+    materialCounts[material] = materialSources[material].reduce((total, source) => total + source.available, 0);
+    if (missing) reasons.push(`需要${ITEMS[material].name} ×${count}`);
+  }
+  return { materialCounts, materialSources, materialPlan, reasons };
+}
 function pay(profile, cost, materials) {
   if (profile.funding < cost) return '研究经费不足。';
   const reasons = materialReasons(profile, materials);
@@ -207,7 +226,8 @@ function factorInputs(profile, project) {
   return { ...skillLevels(research), quality: project.quality, evidence: project.evidence,
     preparation: project.preparation, equipment: gearBonus(profile, 'experiment'),
     headroom: capacity(profile) - Math.min(3, PROJECTS[project.type].capacity + project.scope),
-    experience: research.methods?.[project.type] || 0, topicFit: DIRECTIONS[project.direction].specialty === project.type,
+    experience: research.methods?.[project.type] || 0,
+    topicFit: project.automaticFit === true || DIRECTIONS[project.direction]?.specialty === project.type,
     scope: project.scope, support: titleSupport(research.stage).experimentQuality + (research.legacySupport?.experimentQuality || 0) };
 }
 
@@ -215,10 +235,10 @@ export function researchView(profile) {
   const research = profile.research;
   const project = research.project;
   const actions = [];
-  const preparations = Object.entries(PREPARATIONS).map(([id, output]) => ({ id, inputName: ITEMS[id].name, outputName: ITEMS[output].name, disabled: !number(profile.stash[id]) }));
   const add = (id, name, reasons = []) => actions.push({ id: `research:${id}`, name, disabled: reasons.length > 0, reason: reasons.join('；') });
   const common = { ...structuredClone(research), ...progressionView(research), skills: skillLevels(research), skillXp: { ...research.skills },
-    stageName: STAGES[research.stage].name, capacity: capacity(profile), directions: DIRECTIONS, preparations,
+    stageName: STAGES[research.stage].name, capacity: capacity(profile), directions: {}, preparations: [],
+    materialCounts: projectMaterials(profile, { dataset: 0, src_code: 0, wind: 0, compute: 0 }).materialCounts,
     nextStage: STAGES[research.stage + 1]?.name || null, promotionReasons: promotionReasons(profile), portfolio: portfolioView(research) };
   if (project) {
     const t = PROJECTS[project.type];
@@ -241,9 +261,11 @@ export function researchView(profile) {
   return { ...common, actions, nextActionId: common.promotionReasons.length ? null : 'research:promote',
     templates: Object.entries(PROJECTS).map(([type, t]) => {
       const scope = researchScope(profile, type);
-      const reasons = [...requirements(profile, type, scope), ...materialReasons(profile, t.materials)];
+      const materials = projectMaterials(profile, t.materials);
+      const reasons = [...requirements(profile, type, scope), ...materials.reasons];
       if (profile.funding < t.cost * (scope + 1)) reasons.push('启动经费不足');
       return { id: type, scope, name: `${['基础', '进阶', '前沿'][scope]}${t.name}`, materials: t.materials, cost: t.cost * (scope + 1),
+        materialCounts: materials.materialCounts, materialSources: materials.materialSources, materialPlan: materials.materialPlan,
         credit: t.credit * (scope + 1), disabled: reasons.length > 0, reason: reasons.join('；') };
     }) };
 }
@@ -253,8 +275,10 @@ export function researchAct(profile, action) {
   const [verb, id, ...extra] = String(action || '').split(':');
   const fail = reason => ({ ok: false, reason });
   const done = message => { research.lastMessage = message; return { ok: true, message }; };
-  const withId = ['prepare', 'direction', 'start'];
+  const withId = ['start'];
   if (verb === 'talent') return fail('科研支持已随职称自动生效，无需选择流派。');
+  if (verb === 'prepare') return fail('材料会在立项时自动投入，无需手动整理。');
+  if (verb === 'direction') return fail('研究方向已自动匹配课题，无需单独选择。');
   if (extra.length || (withId.includes(verb) ? !id : verb !== 'milestone' && id !== undefined)) return fail('未知的研究操作。');
   if (verb === 'milestone') {
     if (id !== 'ack' || extra.length || !research.lastMilestone) return fail('没有待收好的晋升记录。');
@@ -262,39 +286,27 @@ export function researchAct(profile, action) {
     research.lastMilestone.acknowledged = true;
     return done('晋升记录已收好；支持经费已到账，解锁的能力与地点会一直保留。');
   }
-  if (verb === 'prepare') {
-    const output = PREPARATIONS[id];
-    if (!Object.hasOwn(PREPARATIONS, id) || !number(profile.stash[id])) return fail('仓库里没有可整理的这份研究材料。');
-    profile.stash[id] -= 1;
-    if (!profile.stash[id]) delete profile.stash[id];
-    profile.stash[output] = number(profile.stash[output]) + 1;
-    research.prepared[output] = Math.min(8, number(research.prepared[output]) + 1);
-    research.day += 1;
-    return done(`已将一份${ITEMS[id].name}整理为${ITEMS[output].name}，整理笔记已留存。`);
-  }
-  if (verb === 'direction') {
-    if (!Object.hasOwn(DIRECTIONS, id)) return fail('没有这个研究方向。');
-    if (research.project) return fail('请先完成或放弃当前项目，再切换研究方向。');
-    research.direction = id;
-    return done(`研究方向设为${DIRECTIONS[id].name}。`);
-  }
   if (verb === 'start') {
     if (!Object.hasOwn(PROJECTS, id)) return fail('没有这个研究项目。');
     if (research.project) return fail('当前项目尚未结束。');
     const scope = researchScope(profile, id);
-    const reasons = requirements(profile, id, scope);
+    const materials = projectMaterials(profile, PROJECTS[id].materials);
+    const reasons = [...requirements(profile, id, scope), ...materials.reasons];
     if (reasons.length) return fail(reasons.join('；'));
-    const error = pay(profile, PROJECTS[id].cost * (scope + 1), PROJECTS[id].materials);
+    const error = pay(profile, PROJECTS[id].cost * (scope + 1), materials.materialPlan);
     if (error) return fail(error);
     const preparation = Object.entries(PROJECTS[id].materials).reduce((total, [material, count]) => {
-      const used = Math.min(count, number(research.prepared[material]));
+      const automatic = materials.materialSources[material].reduce((sum, source) => sum + (source.automatic ? source.count : 0), 0);
+      // Raw input already earns its preparation. Keep historical notes for
+      // uncovered canonical inputs rather than spending them for no benefit.
+      const used = Math.min(count - automatic, number(research.prepared[material]));
       if (Object.hasOwn(research.prepared, material)) research.prepared[material] -= used;
-      return total + used;
+      return Math.min(2, total + automatic + used);
     }, 0);
     research.sequence += 1;
     research.day += 1;
-    research.project = { id: `paper-${research.sequence}`, type: id, direction: research.direction, scope,
-      title: `${DIRECTIONS[research.direction].topic} · ${['基础', '进阶', '前沿'][scope]}${PROJECTS[id].name} #${research.sequence}`,
+    research.project = { id: `paper-${research.sequence}`, type: id, direction: research.direction, automaticFit: true, scope,
+      title: `${['基础', '进阶', '前沿'][scope]}${PROJECTS[id].name} #${research.sequence}`,
       quality: Math.min(100, 25 + Math.min(8, gearBonus(profile, 'literature')) + preparation * 4
         + titleSupport(research.stage).initialQuality + (research.legacySupport?.initialQuality || 0)),
       evidence: preparation * 5, preparation, successfulRuns: 0, setbacks: 0, lastOutcome: '',

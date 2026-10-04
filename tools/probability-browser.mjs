@@ -23,8 +23,8 @@ const WAREHOUSE_DESKTOP_SHOT = path.join(ARTIFACTS, 'probability-warehouse-deskt
 const WAREHOUSE_MOBILE_SHOT = path.join(ARTIFACTS, 'probability-warehouse-mobile.png');
 const EVENT_DESKTOP_SHOT = path.join(ARTIFACTS, 'probability-event-desktop.png');
 const EVENT_MOBILE_SHOT = path.join(ARTIFACTS, 'probability-event-mobile.png');
-const RESEARCH_DESKTOP_SHOT = path.join(ARTIFACTS, 'ui-v6-research-missing-1440.png');
-const RESEARCH_MOBILE_SHOT = path.join(ARTIFACTS, 'ui-v6-research-missing-390.png');
+const RESEARCH_DESKTOP_SHOT = path.join(ARTIFACTS, 'ui-v7-research-missing-1440.png');
+const RESEARCH_MOBILE_SHOT = path.join(ARTIFACTS, 'ui-v7-research-missing-390.png');
 const FIELD_DESKTOP_SHOT = path.join(ARTIFACTS, 'ui-v5-expedition-desktop.png');
 const FIELD_MOBILE_SHOT = path.join(ARTIFACTS, 'ui-v5-expedition-mobile.png');
 const FIELD_EVENT_DESKTOP_SHOT = path.join(ARTIFACTS, 'ui-v5-expedition-event-desktop.png');
@@ -88,6 +88,17 @@ function createResearchJourneyFixtures() {
   const empty = createCareer(123456789);
   for (const id of ['dataset', 'src_code', 'wind', 'compute']) delete empty.profile.stash[id];
   const readyToStart = structuredClone(supplied);
+  const rawInputs = structuredClone(supplied);
+  delete rawInputs.profile.stash.dataset; delete rawInputs.profile.stash.wind;
+  Object.assign(rawInputs.profile.stash, { unpublished: 2, preprint: 2 });
+  const rawEvaluation = structuredClone(rawInputs);
+  delete rawEvaluation.profile.stash.src_code;
+  const rawNotes = structuredClone(rawInputs);
+  rawNotes.profile.research.prepared = { dataset: 2, wind: 1 };
+  const rawPurchase = structuredClone(rawInputs);
+  delete rawPurchase.profile.stash.src_code; delete rawPurchase.profile.stash.preprint;
+  const oldNotes = structuredClone(readyToStart);
+  oldNotes.profile.research.prepared = { dataset: 2, wind: 1 };
   act(supplied, 'start:replicate');
   act(supplied, 'experiment');
   const experiment = structuredClone(supplied);
@@ -120,12 +131,17 @@ function createResearchJourneyFixtures() {
   }
   assert.ok(returned, 'the seeded research model must produce real returned reviews');
   const oldSix = structuredClone(returned);
-  Object.assign(oldSix.profile.research.project, { runs: 6, submittedRuns: 6, quality: 25, status: 'rejected' });
-  for (const key of ['evidence', 'successfulRuns', 'setbacks', 'preparation', 'lastOutcome']) delete oldSix.profile.research.project[key];
+  Object.assign(oldSix.profile.research.project, { runs: 6, submittedRuns: 6, quality: 25, status: 'rejected', direction: 'robotics', title: '机器人策略模型 · 基础复现研究 #1' });
+  for (const key of ['evidence', 'successfulRuns', 'setbacks', 'preparation', 'lastOutcome', 'automaticFit']) delete oldSix.profile.research.project[key];
   const legacySix = migrateCareer(JSON.stringify(oldSix));
   return [
     { name: 'empty', career: empty, action: null },
     { name: 'start', career: readyToStart, action: 'research:start:replicate' },
+    { name: 'raw-inputs', career: rawInputs, action: 'research:start:replicate' },
+    { name: 'raw-evaluation', career: rawEvaluation, action: 'research:start:evaluate' },
+    { name: 'raw-notes', career: rawNotes, action: 'research:start:replicate' },
+    { name: 'raw-purchase', career: rawPurchase, action: 'research:start:replicate', disabled: true },
+    { name: 'legacy-notes', career: oldNotes, action: 'research:start:replicate' },
     { name: 'missing', career: missing, action: 'research:experiment', disabled: true },
     { name: 'experiment', career: experiment, action: 'research:experiment' },
     { name: 'equipment-missing', career: equipmentMissing, action: 'research:experiment', disabled: true },
@@ -550,7 +566,6 @@ async function clickHubAction(page, action) {
   else if (verb === 'upgrade') scope = '#hub-screen';
   else if (action.startsWith('research:start:')) scope = '#research-templates';
   else if (action.startsWith('research:')) scope = '#research-actions';
-  if (action.startsWith('research:direction:') || action.startsWith('research:prepare:')) scope = '#research-card';
   const button = page.locator(`${scope} [data-hub-action="${action}"]`).first();
   if (verb === 'research') await revealActionDetails(button);
   await button.waitFor({ state: 'visible', timeout: 7000 });
@@ -1453,12 +1468,30 @@ async function assertResearchJourney(page, state, fixture) {
       assert.equal(await button.isEnabled(), !template.disabled, 'project cards should obey server start requirements');
     }
   }
+  assert.equal(await card.locator('#research-preparations, #research-profile, .rw-directions, [data-research-detail="profile"], [data-research-detail="preparations"], [data-hub-action^="research:prepare:"], [data-hub-action^="research:direction:"]').count(), 0,
+    'retired material preparation and direction controls must be absent, including closed details');
+  assert.doesNotMatch(await card.textContent(), /整理材料|研究档案/,
+    'retired setup wrappers and four topic choices must not survive as hidden copy');
+  const attributes = card.locator('.rw-attributes [data-research-attribute]');
+  assert.equal(await attributes.count(), 3, 'exactly three meaningful attributes remain');
+  for (const [key, description] of Object.entries({ engineering: '实验执行', research: '质量与证据', expression: '审稿与晋升' })) {
+    const cell = card.locator(`[data-research-attribute="${key}"]`);
+    assert.equal(await cell.isVisible(), true, 'attribute explanations should not require expanding a wrapper');
+    assert.match(await cell.innerText(), new RegExp(`Lv\\.${research.skills[key]}`));
+    assert.ok((await cell.innerText()).includes(description));
+  }
+  if (fixture.name === 'legacy-six-round') {
+    assert.equal(research.project.automaticFit, false);
+    assert.equal(research.project.title, '机器人策略模型 · 基础复现研究 #1', 'legacy project title is preserved');
+  }
+  assert.deepEqual(research.directions, {}); assert.deepEqual(research.preparations, []);
   const requiredMaterials = page.locator('#research-templates > .rw-current [data-research-material], .rw-main > .rw-current [data-research-material]');
   for (let index = 0; index < await requiredMaterials.count(); index += 1) {
     const row = requiredMaterials.nth(index);
     const id = await row.getAttribute('data-research-material');
-    const stored = state.hub.items.find(item => item.id === id)?.storedCount || 0;
-    assert.equal(Number(await row.getAttribute('data-available')), stored, 'material requirements must use actual stored copies');
+    const chosen = research.templates.find(template => template.id === fixture.action?.split(':').at(-1));
+    const stored = chosen?.materialCounts?.[id] ?? (state.hub.items.find(item => item.id === id)?.storedCount || 0);
+    assert.equal(Number(await row.getAttribute('data-available')), stored, 'material availability must match usable stock, including automatic equivalents');
     assert.ok(Number(await row.getAttribute('data-required')) > 0, 'material requirements must state a positive required quantity');
   }
   const geometry = await primary.evaluate(element => {
@@ -1490,12 +1523,53 @@ async function runResearchJourneyScenarios(browser, base, saveDir, pageErrors, e
         await page.setViewportSize({ width, height: width === 1440 ? 900 : 844 });
         await assertResearchJourney(page, state, fixture);
         await page.locator('#research-card').evaluate(element => element.scrollIntoView({ block: 'start' }));
-        await page.screenshot({ path: path.join(ARTIFACTS, `ui-v6-research-${fixture.name}-${width}.png`) });
+        await page.screenshot({ path: path.join(ARTIFACTS, `ui-v7-research-${fixture.name}-${width}.png`) });
       }
       state = await assertReloadPreservesState(page, state, `research ${fixture.name}`);
       await activateWorkspace(page, 'research');
       await assertResearchJourney(page, state, fixture);
-      if (fixture.name === 'missing') {
+      if (['raw-inputs', 'raw-evaluation', 'raw-notes', 'raw-purchase', 'legacy-notes'].includes(fixture.name)) {
+        if (fixture.name === 'raw-purchase') {
+          const beforeShop = structuredClone(state);
+          await page.locator('#research-card .rw-sources [data-open-workspace="shop"]').click();
+          await page.locator('#workspace-panel-shop').waitFor({ state: 'visible' });
+          assert.deepEqual((await readState(page)).hub.research, beforeShop.hub.research, 'source navigation must not consume raw input');
+          state = await clickHubAction(page, 'buy:src_code');
+          await activateWorkspace(page, 'research');
+          await assertResearchJourney(page, state, { ...fixture, disabled: false });
+        }
+        const startAction = fixture.action;
+        const template = state.hub.research.templates.find(row => row.id === startAction.split(':').at(-1));
+        const shownSources = await page.locator('#research-card .rw-current .rw-auto-material').allTextContents();
+        for (const source of Object.values(template.materialSources).flat().filter(row => row.automatic && row.count)) {
+          assert.ok(shownSources.some(text => text.includes(source.name) && text.includes(`×${source.count}`)),
+            `exact automatic source ${source.name} and count must be visible before starting`);
+        }
+        const plan = structuredClone(template.materialPlan);
+        const beforeItems = structuredClone(state.hub.items);
+        let receipt;
+        const observe = request => {
+          if (new URL(request.url()).pathname === '/api/hub/action' && request.postDataJSON()?.action === startAction) receipt = request.postDataJSON();
+        };
+        page.on('request', observe);
+        const after = await clickHubAction(page, startAction);
+        page.off('request', observe);
+        assert.equal(after.hub.funding, state.hub.funding - template.cost);
+        assert.equal(after.hub.research.project.automaticFit, true);
+        for (const item of beforeItems) {
+          const count = after.hub.items.find(row => row.id === item.id)?.storedCount || 0;
+          assert.equal(count, item.storedCount - (plan[item.id] || 0), `start must spend exactly the shown ${item.name} count`);
+        }
+        assert.equal(after.hub.research.project.preparation, fixture.name === 'raw-evaluation' ? 2 : 1);
+        if (fixture.name === 'legacy-notes') assert.deepEqual(after.hub.research.prepared, { dataset: 1, wind: 1 });
+        if (fixture.name === 'raw-notes') assert.deepEqual(after.hub.research.prepared, { dataset: 2, wind: 1 },
+          'a raw input already supplies its preparation credit, so earned notes must remain for future canonical inputs');
+        assert.ok(receipt?.requestId);
+        const replay = await (await page.request.post('/api/hub/action', { data: receipt })).json();
+        assert.equal(replay.replayed, true);
+        assert.deepEqual((await readState(page)).hub, after.hub, 'retrying a raw-material start cannot consume twice');
+        await assertReloadPreservesState(page, after, `${fixture.name} automatic start`);
+      } else if (fixture.name === 'missing') {
         const openShop = page.locator('#research-card .rw-sources [data-open-workspace="shop"]');
         await openShop.click();
         await page.locator('#workspace-panel-shop').waitFor({ state: 'visible', timeout: 5000 });
@@ -1553,7 +1627,6 @@ async function completeResearchThroughUi(page) {
   await clickHubAction(page, 'equip:lightweight_laptop');
   await clickHubAction(page, 'buy:wind');
   await clickHubAction(page, 'sell:wind');
-  await clickHubAction(page, 'research:direction:systems');
 
   await clickHubAction(page, 'buy:dataset');
   await clickHubAction(page, 'buy:dataset');
@@ -1992,9 +2065,9 @@ try {
   assert.deepEqual(imageFailures(responses), [], 'existing PNG image assets should load successfully');
   assert.equal(model.calls.length, 0, 'the probability UI and research loop must not call the AI provider');
   await fs.writeFile(path.join(ARTIFACTS, 'ui-v2-metrics.json'), JSON.stringify(firstScreenMetrics, null, 2) + '\n');
-  await fs.writeFile(path.join(ARTIFACTS, 'ui-v6-journey-metrics.json'), JSON.stringify(journeyMetrics, null, 2) + '\n');
+  await fs.writeFile(path.join(ARTIFACTS, 'ui-v7-journey-metrics.json'), JSON.stringify(journeyMetrics, null, 2) + '\n');
   console.log('First-screen text: ' + JSON.stringify(firstScreenMetrics));
-  console.log('Probability browser passed: single search, dominant live backpack, hidden probabilities, neutral event choices, concise receipts, accurate resource meters, eleven research journey states, reload preservation, progressive disclosure, warehouse capacity/ownership, equipment swaps, uncertain-mutation replay, manual raids and events, paper review/acceptance/promotion, 320px/desktop/mobile, and local asset loading.');
+  console.log('Probability browser passed: single search, dominant live backpack, hidden probabilities, neutral event choices, concise receipts, accurate resource meters, sixteen research journey states including both automatic raw-input paths and preserved legacy notes, reload preservation, progressive disclosure, warehouse capacity/ownership, equipment swaps, uncertain-mutation replay, manual raids and events, paper review/acceptance/promotion, 320px/desktop/mobile, and local asset loading.');
   console.log(`Screenshots: ${path.relative(ROOT, DESKTOP_SHOT)}, ${path.relative(ROOT, MOBILE_SHOT)}, ${path.relative(ROOT, DIFFICULTY_DESKTOP_SHOT)}, ${path.relative(ROOT, DIFFICULTY_MOBILE_SHOT)}, ${path.relative(ROOT, WAREHOUSE_DESKTOP_SHOT)}, ${path.relative(ROOT, WAREHOUSE_MOBILE_SHOT)}, ${path.relative(ROOT, EVENT_DESKTOP_SHOT)}, ${path.relative(ROOT, EVENT_MOBILE_SHOT)}`);
   console.log(`Intuitive-interface screenshots: ${[RESEARCH_DESKTOP_SHOT, RESEARCH_MOBILE_SHOT, FIELD_DESKTOP_SHOT, FIELD_MOBILE_SHOT, FIELD_EVENT_DESKTOP_SHOT, FIELD_EVENT_MOBILE_SHOT].map(file => path.relative(ROOT, file)).join(', ')}`);
 } catch (error) {

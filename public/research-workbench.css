@@ -83,3 +83,13 @@
   .research-workbench .rw-support{grid-template-columns:1fr;gap:0;margin-top:5px}.research-workbench .rw-details>summary{min-height:46px;font-size:11px}.research-workbench .rw-template-options{grid-template-columns:1fr}.research-workbench .rw-template{padding:12px}
 }
 @media(max-width:360px){.research-workbench .rw-current-heading,.research-workbench .rw-supply-section,.research-workbench .rw-next-step{padding-left:12px;padding-right:12px}.research-workbench .rw-progress-grid{padding-left:12px;padding-right:12px;gap:11px}.research-workbench .rw-last-outcome{margin-left:12px;margin-right:12px}.research-workbench .rw-run-fact{padding-left:11px}.research-workbench .rw-details>summary>small{max-width:48%;font-size:10px}}
+
+/* Attributes explain existing mechanics without another settings panel. */
+.research-workbench .rw-attributes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:0 0 18px;padding:0;color:#3d5e44}
+.research-workbench .rw-attributes>div{padding:10px 13px;border:1px solid #e0e6d8;border-radius:7px;background:#f6f8f0;min-width:0}
+.research-workbench .rw-attributes dt{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:12px;line-height:1.5}
+.research-workbench .rw-attributes dt b{font-size:13px;font-weight:650;color:#2e6041;white-space:nowrap}
+.research-workbench .rw-attributes dd{margin:4px 0 0;color:#6b795f;font-size:11px;line-height:1.5}
+.research-workbench .rw-auto-material{color:#456642}
+@media(max-width:600px){.research-workbench .rw-attributes{gap:6px;margin-bottom:13px}.research-workbench .rw-attributes>div{padding:8px}.research-workbench .rw-attributes dt{font-size:11px;gap:3px}.research-workbench .rw-attributes dt b{font-size:12px}.research-workbench .rw-attributes dd{font-size:10px}}
+@media(max-width:360px){.research-workbench .rw-attributes dt{display:block}.research-workbench .rw-attributes dt b{margin-left:5px}.research-workbench .rw-attributes>div{padding:8px 6px}.research-workbench .rw-attributes dd{font-size:9px}}

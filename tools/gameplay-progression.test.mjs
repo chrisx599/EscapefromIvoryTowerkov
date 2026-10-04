@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createCareer, careerView, deployProbability, hubAct, migrateCareer, settle } from '../src/career.js';
 import { actProbabilityRaid, createProbabilityRaid, probabilityRaidView } from '../src/probability-raid.js';
-import { DIRECTIONS, PROJECTS, STAGES } from '../src/research.js';
+import { PROJECTS, STAGES } from '../src/research.js';
 import { ACADEMIC_STORY_IDS, academicStoryCandidates, normalizeStories } from '../src/academic-stories.js';
 import { finishPaper } from './research-qa.mjs';
 
@@ -67,15 +67,14 @@ function checkedDeployment(career, options) {
 test('512 genuine first-paper paths reach promotion from the starter budget across all identity backgrounds', t => {
   const metrics = { careers: 0, minRuns: Infinity, maxRuns: 0, minFundingBeforePromotion: Infinity, maxActions: 0 };
   const backgrounds = new Set();
-  for (let seed = 1; seed <= 128; seed += 1) {
-    for (const direction of Object.keys(DIRECTIONS)) {
+  for (let seed = 1; seed <= 256; seed += 1) {
+    for (const type of ['replicate', 'evaluate']) {
       const career = createCareer(seed * 7919);
-      checkedHub(career, `research:direction:${direction}`);
-      const progress = earnPaper(career, direction === 'multimodal' ? 'evaluate' : 'replicate');
+      const progress = earnPaper(career, type);
       const prePromotionFunding = career.profile.funding;
       const accepted = structuredClone(career.profile.research.papers);
       assert.equal(accepted.length, 1);
-      assert.ok(prePromotionFunding >= 90, `seed ${seed}/${direction}: first paper should retain one basic experiment of funding before the title grant`);
+      assert.ok(prePromotionFunding >= 90, `seed ${seed}/${type}: first paper should retain one basic experiment of funding before the title grant`);
       const promotion = careerView(career).research.actions.find(row => row.id === 'research:promote');
       assert.equal(promotion.disabled, false, promotion.reason);
       checkedHub(career, 'research:promote');
@@ -90,7 +89,7 @@ test('512 genuine first-paper paths reach promotion from the starter budget acro
       metrics.minRuns = Math.min(metrics.minRuns, progress.runs);
       metrics.maxRuns = Math.max(metrics.maxRuns, progress.runs);
       metrics.minFundingBeforePromotion = Math.min(metrics.minFundingBeforePromotion, prePromotionFunding);
-      metrics.maxActions = Math.max(metrics.maxActions, progress.actions + 2); // Direction and promotion.
+      metrics.maxActions = Math.max(metrics.maxActions, progress.actions + 1); // Promotion is the only step after publication.
     }
   }
   assert.equal(backgrounds.size, 12, 'cover every school/personality combination');

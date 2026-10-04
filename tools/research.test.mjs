@@ -94,7 +94,7 @@ test('research equipment improves experiments and finetuning requires rank and a
   assert.ok(geared.profile.research.project.quality > plain.profile.research.project.quality, 'equipped experiment tool makes a real quality difference');
   assert.equal(action(geared, 'direction:robotics').ok, false);
   action(geared, 'abandon');
-  assert.equal(action(geared, 'direction:robotics').ok, true);
+  assert.equal(action(geared, 'direction:robotics').ok, false, 'removed direction actions stay retired without a project');
   assert.equal(action(geared, 'start:finetune').ok, false);
   assert.equal(hubAct(geared, 'buy:gpu_workstation').ok, false);
   geared.profile.research.stage = 1;
@@ -104,14 +104,20 @@ test('research equipment improves experiments and finetuning requires rank and a
   assert.equal(action(geared, 'start:finetune').ok, true);
 });
 
-test('material preparation replaces one held material and cannot duplicate it', () => {
+test('raw research material is consumed atomically at project start, with no standalone preparation action', () => {
   const career = createCareer(9);
-  career.profile.stash.unpublished = 1;
-  assert.equal(action(career, 'prepare:unpublished').ok, true);
-  assert.equal(career.profile.stash.unpublished, undefined);
-  assert.equal(career.profile.stash.dataset, 1);
+  Object.assign(career.profile.stash, { unpublished: 1, src_code: 1 });
+  const before = JSON.stringify(career);
   assert.equal(action(career, 'prepare:unpublished').ok, false);
-  assert.equal(career.profile.stash.dataset, 1);
+  assert.equal(JSON.stringify(career), before);
+  assert.equal(action(career, 'start:replicate').ok, true);
+  assert.equal(career.profile.stash.unpublished, undefined);
+  assert.equal(career.profile.stash.dataset, undefined, 'automatic input consumption must not manufacture stock');
+  assert.equal(career.profile.stash.src_code, undefined);
+  assert.equal(career.profile.research.project.preparation, 1);
+  const started = JSON.stringify(career);
+  assert.equal(action(career, 'start:replicate').ok, false);
+  assert.equal(JSON.stringify(career), started, 'a repeated start must not consume or reward twice');
 });
 
 test('unknown research and venue identifiers fail without changing the profile', () => {
@@ -139,7 +145,6 @@ test('saved achievement credits survive profile migration without manufacturing 
 
 test('paper milestones can unlock all career stages and additional raid scenes', () => {
   const career = supplied(987654321);
-  action(career, 'direction:multimodal');
   assert.equal(hubAct(career, 'venue:visit').ok, false);
   for (let paper = 0; paper < 55 && career.profile.research.stage < STAGES.length - 1; paper++) {
     Object.assign(career.profile.stash, { dataset: 3, src_code: 3, wind: 3, compute: 24 });

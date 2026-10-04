@@ -86,11 +86,11 @@ test('a fresh all-shop first paper fits 800 funding even with every experimental
   assert.equal(40 + 50 + 30 + 7 * (60 + 30), 750);
 });
 
-test('material preparation changes the real next project once and never consumes undisclosed stock', () => {
+test('legacy material notes improve the real next project once and never consume undisclosed stock', () => {
   const plain = supplied(5000), prepared = structuredClone(plain);
+  prepared.research.prepared = { dataset: 1, wind: 1 };
   prepared.stash.unpublished = 1;
   prepared.stash.preprint = 1;
-  checked(prepared, 'prepare:unpublished'); checked(prepared, 'prepare:preprint');
   assert.deepEqual(prepared.research.prepared, { dataset: 1, wind: 1 });
   const snapshot = structuredClone(prepared.stash), funds = prepared.funding;
   checked(plain, 'start:evaluate'); checked(prepared, 'start:evaluate');
@@ -216,29 +216,63 @@ test('titles unlock stronger automatic scope without making existing equipment o
   checked(p, 'start:replicate'); assert.equal(p.research.project.scope, 2);
 });
 
-test('actual seeded actions react to preparation, equipment, skills, topic, work and experience', () => {
-  // First xorshift draw is 0.5015603976789862: unchanged across every pair.
-  const seed = 8464;
+test('actual seeded actions independently react to materials, equipment, skills, fit, work and experience', () => {
   const cases = {
-    preparation: p => { p.stash.unpublished = 1; checked(p, 'prepare:unpublished'); },
+    preparation: p => { delete p.stash.dataset; p.stash.unpublished = 1; },
     equipment: p => { p.loadout.tool = 'experiment_tracker'; },
     device: p => { p.loadout.device = 'gpu_workstation'; },
     engineering: p => { p.research.skills.engineering = 12; },
     research: p => { p.research.skills.research = 12; },
-    topic: p => { checked(p, 'direction:robotics'); },
     experience: p => { p.research.methods.replicate = 12; },
     work: null,
+    legacyFit: null,
   };
   for (const [name, improve] of Object.entries(cases)) {
-    const base = supplied(seed), enhanced = structuredClone(base);
-    if (improve) improve(enhanced);
-    checked(base, 'start:replicate'); checked(enhanced, 'start:replicate');
-    if (name === 'work') enhanced.research.project.quality = 80;
-    checked(base, 'experiment'); checked(enhanced, 'experiment');
-    assert.equal(base.research.project.successfulRuns, 0, name);
-    assert.equal(enhanced.research.project.successfulRuns, 1, name);
-    assert.equal(base.research.rng, enhanced.research.rng, name);
-    assert.equal(base.research.methods.replicate, 1, 'a setback still teaches');
+    let found = false;
+    for (let seed = 1; seed <= 512 && !found; seed++) {
+      const base = supplied(seed * 7919), enhanced = structuredClone(base);
+      if (improve) improve(enhanced);
+      checked(base, 'start:replicate'); checked(enhanced, 'start:replicate');
+      if (name === 'work') enhanced.research.project.quality = 80;
+      if (name === 'legacyFit') {
+        base.research.project.automaticFit = false;
+        base.research.project.direction = 'llm';
+        enhanced.research.project.automaticFit = false;
+        enhanced.research.project.direction = 'robotics';
+      }
+      checked(base, 'experiment'); checked(enhanced, 'experiment');
+      if (!base.research.project.successfulRuns && enhanced.research.project.successfulRuns) {
+        assert.equal(base.research.rng, enhanced.research.rng, name);
+        assert.equal(base.research.methods.replicate, 1, 'a setback still teaches');
+        found = true;
+      }
+    }
+    assert.equal(found, true, `${name} must change a real outcome under an identical seeded draw`);
+  }
+});
+
+test('the three compact skill explanations correspond to real effects and promotion requirements', () => {
+  const f = { quality: 75, evidence: 65, engineering: 1, research: 1, expression: 1 };
+  const basic = experimentOutcome(f, 0);
+  const engineering = experimentOutcome({ ...f, engineering: 5 }, 0);
+  const research = experimentOutcome({ ...f, research: 5 }, 0);
+  assert.ok(engineering.qualityGain > basic.qualityGain, 'engineering improves execution quality');
+  assert.ok(research.qualityGain > basic.qualityGain && research.evidenceGain > basic.evidenceGain,
+    'research improves experiment quality and evidence');
+  assert.deepEqual(experimentOutcome({ ...f, expression: 5 }, 0), basic,
+    'expression must not be misrepresented as improving experiments');
+  assert.ok(draws.some(draw => reviewOutcome(f, draw).status !== 'ready'
+    && reviewOutcome({ ...f, expression: 5 }, draw).status === 'ready'), 'expression affects actual review decisions');
+  for (const key of ['engineering', 'research', 'expression']) {
+    const p = supplied(99, 2);
+    p.research.papers = Array.from({ length: 4 }, (_, index) => ({ id: `paper-${index}`, type: 'replicate',
+      quality: 100, evidence: 100, title: '已录用论文', credit: 60, day: 1 }));
+    p.achievement = 240; p.research.methods.replicate = 30;
+    p.research.skills = { engineering: 27, research: 27, expression: 27 };
+    p.research.skills[key] = 0;
+    assert.equal(researchAct(p, 'promote').ok, false, `${key} gates promotion`);
+    p.research.skills[key] = 27;
+    assert.equal(researchAct(p, 'promote').ok, true, `${key} is the remaining promotion requirement`);
   }
 });
 

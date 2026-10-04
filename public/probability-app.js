@@ -479,7 +479,8 @@ function renderResearch() {
   const targetNeeds = { ...(starter?.materials || {}), compute: Math.max(2 * (1 + Number(starter?.scope || 0)), Number(starter?.materials?.compute) || 0) };
   const targetMissing = Object.entries(targetNeeds).map(([id, count]) => {
     const item = inventory.get(id);
-    const missing = Math.max(0, count - Math.max(0, Number(item?.count || 0) - Number(item?.packedCount || 0)));
+    const owned = starter?.materialCounts && Object.hasOwn(starter.materialCounts, id) ? Number(starter.materialCounts[id]) : Math.max(0, Number(item?.count || 0) - Number(item?.packedCount || 0));
+    const missing = Math.max(0, count - owned);
     return missing ? (MATERIAL_LABELS[id] || item?.name || id) + ' ×' + missing : '';
   }).filter(Boolean);
   $('#setup-gap').textContent = (research.actions || []).some(row => row.id === 'research:promote' && !row.disabled) ? '晋升条件已齐，前往研究工位领取晋升奖励'

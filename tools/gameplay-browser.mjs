@@ -199,7 +199,7 @@ async function promotionScenario(page, label, completePaper) {
   assert.equal(await page.locator('#career-talent-choice, [data-hub-action^="research:talent:"]').count(), 0);
   assert.equal(promoted.hub.research.canChooseTalent, false);
   assert.deepEqual(promoted.hub.research.talents, []);
-  if (completePaper) await captureLayouts(page, '#promotion-celebration', 'ui-v6-promotion');
+  if (completePaper) await captureLayouts(page, '#promotion-celebration', 'ui-v7-promotion');
   promoted = await reloadUnchanged(page, promoted, `${label} earned promotion`);
   assert.ok(receipt?.requestId);
   const replayed = await (await page.request.post('/api/hub/action', { data: receipt })).json();

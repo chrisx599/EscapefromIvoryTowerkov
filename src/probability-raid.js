@@ -1522,7 +1522,7 @@ function chooseEvent(run) {
     ...event,
     name: typeof contact.name === 'string' && contact.name ? contact.name : event.name,
     trust: Number(contact.trust) || 0,
-    text: `${event.text} 当前交流方向：${DIRECTIONS[run.direction]?.name || '大模型'}。`,
+    text: event.text,
   };
   chosen.choices = clone(event.choices || []);
   if (run.encounterVersion === 2 && event.type === 'npc' && normalizeRaidTalent(run.talent)?.id === 'connector') chosen.choices.push(CONNECTOR_CHOICE);
