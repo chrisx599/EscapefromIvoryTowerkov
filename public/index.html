@@ -9,6 +9,8 @@
   <title>逃离象牙塔夫 | Escape from Ivory Towerkov</title>
   <link rel="stylesheet" href="/probability.css">
   <link rel="stylesheet" href="/field-station.css">
+  <link rel="stylesheet" href="/field-scene.css">
+  <link rel="stylesheet" href="/research-workbench.css">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 </head>
 <body>
@@ -116,39 +118,43 @@
     </section>
 
     <section id="raid-screen" class="screen hidden">
-      <div class="raid-layout">
-        <div class="raid-main">
-          <section class="card risk-card">
-            <div class="card-head"><h3 id="raid-heading" class="raid-heading">本次远征</h3><span id="raid-status" class="pill">行动中</span></div>
-            <div id="raid-statusline" class="raid-status"></div>
-            <div id="expedition-context" class="expedition-context"></div>
-            <div class="outlook-strip" aria-label="当前形势"><div><span>发现</span><strong id="prob-acquisition">—</strong></div><div><span>遭遇</span><strong id="prob-encounter">—</strong></div><div><span>带回</span><strong id="prob-full">—</strong></div></div>
-            <details id="raid-observations" class="disclosure"><summary>现场线索</summary><div class="disclosure-content"><p id="encounter-reason" class="meta"></p><div id="raid-material-probabilities" class="material-probabilities" aria-label="材料线索"></div><p id="encounter-pacing" class="tiny"></p></div></details>
-            <div id="search-approaches" class="search-approaches" role="group" aria-label="搜索方式"></div>
-            <p id="approach-hint" class="approach-hint"></p>
-            <div id="raid-actions" class="actions raid-actions"></div>
+      <section id="raid-cockpit" class="card risk-card">
+        <div class="card-head"><h3 id="raid-heading" class="raid-heading">本次远征</h3><span id="raid-status" class="pill">行动中</span></div>
+        <div id="raid-statusline" class="raid-status"></div>
+        <div id="field-play-grid" class="field-play-grid">
+          <div class="field-scene-column">
+            <div id="field-scene" class="field-scene" aria-label="当前远征现场"></div>
+            <div id="field-depth" class="field-depth" aria-label="当前深入程度"></div>
+            <section id="raid-turn-card" class="turn-card hidden" aria-live="polite">
+              <div class="turn-heading"><h2 id="raid-turn-title">刚刚发生</h2></div>
+              <p id="raid-turn-text" class="turn-copy"></p>
+              <div id="raid-turn-changes" class="turn-changes"></div><div id="raid-turn-items" class="turn-items"></div>
+            </section>
+          </div>
+          <div id="field-decision" class="field-decision">
+            <div id="field-next-step" class="field-next-step"></div>
+            <section id="raid-event-card" class="npc-card hidden" aria-live="polite">
+              <span id="event-type-label" class="event-type-label">人物交流</span>
+              <div class="npc-head"><img id="event-image" src="/assets/generated/scholar.png" alt="当前遭遇" decoding="async"><div><h3 id="event-title"></h3><p id="event-text"></p></div></div>
+              <div id="event-choices" class="grid choice-grid"></div>
+            </section>
+            <section id="pending-loot-card" class="card loot-card hidden"><h2>背包装不下了</h2><p class="loot-next-step">选择带走哪些发现，也可以先整理背包腾出空间。</p><div id="pending-loot-actions" class="actions"></div><div class="item-browser item-browser-field"><div id="pending-loot-items" class="grid item-grid"></div><aside id="pending-item-detail" class="item-detail" role="region" aria-label="本轮发现详情" aria-live="polite">选择物品查看详情。</aside></div></section>
+            <div id="field-search-controls">
+              <div class="outlook-strip" aria-label="当前形势"><div><span>发现</span><strong id="prob-acquisition">—</strong></div><div><span>遭遇</span><strong id="prob-encounter">—</strong></div><div><span>带回</span><strong id="prob-full">—</strong></div></div>
+              <div id="search-approaches" class="search-approaches" role="group" aria-label="搜索方式"></div>
+              <p id="approach-hint" class="approach-hint"></p>
+              <div id="raid-actions" class="actions raid-actions"></div>
+            </div>
             <p id="extraction-hint-text" class="tiny"></p>
             <div id="raid-feedback" class="message hidden" role="status" aria-live="polite"></div>
-          </section>
-          <section id="raid-event-card" class="npc-card hidden" aria-live="polite">
-            <div class="area-section-heading"><span class="area-symbol">!</span><div><span class="eyebrow">临场状况</span><h2>当前遭遇</h2></div><span id="event-type-label" class="event-type-label">人物交流</span></div>
-            <div class="npc-head"><img id="event-image" src="/assets/generated/scholar.png" alt="当前遭遇" decoding="async"><div><h3 id="event-title"></h3><p id="event-text"></p></div></div>
-
-            <div id="event-choices" class="grid choice-grid"></div>
-          </section>
-          <section id="pending-loot-card" class="card loot-card hidden"><div class="area-section-heading"><span class="area-symbol">＋</span><div><span class="eyebrow">刚刚发现</span><h2>整理本轮物资</h2></div></div><p class="loot-next-step">先处理本轮发现，再继续搜索或撤离。</p><div class="item-browser item-browser-field"><div id="pending-loot-items" class="grid item-grid"></div><aside id="pending-item-detail" class="item-detail" role="region" aria-label="本轮发现详情" aria-live="polite">选择物品查看详情。</aside></div><div id="pending-loot-actions" class="actions"></div></section>
-          <section id="raid-turn-card" class="turn-card hidden" aria-live="polite">
-            <div class="turn-heading"><span class="turn-mark">↻</span><div><span class="eyebrow">行动回报</span><h2 id="raid-turn-title">本轮结果</h2></div></div>
-            <p id="raid-turn-text" class="turn-copy"></p>
-            <div id="raid-turn-changes" class="turn-changes"></div>
-            <div id="raid-turn-items" class="turn-items"></div>
-          </section>
+          </div>
         </div>
-        <aside class="raid-side">
-          <details id="raid-bag-details" class="card auxiliary-card bag-card disclosure"><summary>背包 <span id="bag-capacity" class="foldout-summary"></span></summary><div class="disclosure-content"><div class="item-browser item-browser-field"><div id="raid-bag" class="grid item-grid"></div><aside id="bag-item-detail" class="item-detail" role="region" aria-label="背包物品详情" aria-live="polite">选择物品查看详情。</aside></div></div></details>
-          <details id="raid-journal" class="card auxiliary-card disclosure"><summary>目标与行动记录</summary><div class="disclosure-content"><div id="raid-objective" class="notice-box"></div><div id="raid-log" class="log"></div><div id="raid-team" class="grid"></div><button class="button small" id="refresh-state" type="button">同步进度</button></div></details>
-        </aside>
-      </div>
+        <details id="raid-observations" class="disclosure"><summary>更多现场线索</summary><div class="disclosure-content"><div id="expedition-context" class="expedition-context"></div><p id="encounter-reason" class="meta"></p><div id="raid-material-probabilities" class="material-probabilities" aria-label="材料线索"></div><p id="encounter-pacing" class="tiny"></p></div></details>
+      </section>
+      <aside class="raid-side">
+        <details id="raid-bag-details" class="card auxiliary-card bag-card disclosure"><summary>整理背包 <span id="bag-capacity" class="foldout-summary"></span></summary><div class="disclosure-content"><div class="item-browser item-browser-field"><div id="raid-bag" class="grid item-grid"></div><aside id="bag-item-detail" class="item-detail" role="region" aria-label="背包物品详情" aria-live="polite">选择物品查看详情。</aside></div></div></details>
+        <details id="raid-journal" class="card auxiliary-card disclosure"><summary>目标与行动记录</summary><div class="disclosure-content"><div id="raid-objective" class="notice-box"></div><div id="raid-log" class="log"></div><div id="raid-team" class="grid"></div><button class="button small" id="refresh-state" type="button">同步进度</button></div></details>
+      </aside>
     </section>
 
     <section id="result-screen" class="screen hidden">

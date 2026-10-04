@@ -1,5 +1,7 @@
 import { itemIconHtml } from './item-art.js';
 import { likelihoodLabel, riskLabel } from './expedition-language.js';
+import { renderFieldScene } from './field-scene.js';
+import { renderResearchWorkbench } from './research-workbench.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -463,67 +465,27 @@ function renderDifficultySetup(venues, difficulties) {
 }
 
 function renderResearch() {
+  const root = $('#research-card');
+  const opened = new Set([...root.querySelectorAll('details[open]')].map(detail => detail.dataset.researchDetail));
+  root.innerHTML = renderResearchWorkbench({ hub, items: stashItems(), catalog: itemCatalog(), button: hubButton });
+  for (const detail of root.querySelectorAll('details[data-research-detail]')) {
+    if (opened.has(detail.dataset.researchDetail)) detail.open = true;
+  }
   const research = hub.research || {};
-  const skills = research.skills || {};
-  const papers = research.papers || [];
   const project = research.project;
-  $('#research-stage').textContent = research.nextStage ? (research.stageName || '研究阶段') + ' → ' + research.nextStage : research.stageName || '研究阶段';
-  const direction = research.directions && research.directions[research.direction];
-  const lines = [
-    research.stageName || '',
-    direction ? '方向：' + direction.name : '',
-    '工程 Lv.' + (skills.engineering ?? 1) + ' · 研究 Lv.' + (skills.research ?? 1) + ' · 表达 Lv.' + (skills.expression ?? 1),
-    '研究日 ' + number(research.day) + ' · 已录用 ' + papers.length + ' 篇 · 实验能力 ' + number(research.capacity),
-  ];
-  if (project) lines.push('当前项目：' + (project.title || project.type) + ' · ' + project.status + ' · 实验 ' + number(project.runs) + '/6 轮 · 质量 ' + number(project.quality) + '/' + number(project.target));
-  if (research.promotionReasons && research.promotionReasons.length) lines.push('晋升条件：' + research.promotionReasons.join('；'));
-
-  const templates = research.templates || [];
-  const starter = templates.find(template => template.id === 'replicate') || templates[0];
+  const starter = (research.templates || []).find(row => row.id === 'replicate') || research.templates?.[0];
   const inventory = new Map(stashItems().map(item => [item.id, item]));
   const experiment = (research.actions || []).find(action => action.id === 'research:experiment');
-  if (project && experiment?.disabled && experiment.reason) lines.push('当前实验缺口：' + experiment.reason);
-  if (!project && starter) {
-    const needs = Object.entries(starter.materials || {}).map(([id, count]) => {
-      const item = inventory.get(id);
-      const available = Math.max(0, Number(item?.count || 0) - Number(item?.packedCount || 0));
-      return { id, name: item?.name || itemCatalog().get(id)?.name || id, need: count, missing: Math.max(0, count - available) };
-    }).filter(item => item.missing);
-    if (needs.length) lines.push('复现缺口：' + needs.map(item => item.name + ' ×' + item.missing).join('、'));
-    const computeAvailable = Math.max(0, Number(inventory.get('compute')?.count || 0) - Number(inventory.get('compute')?.packedCount || 0));
-    if (computeAvailable < 2) lines.push('实验准备：算力卡 ' + computeAvailable + '/2；可通过探索、资源交换或商店补齐。');
-  }
-  $('#research-profile').innerHTML = lines.filter(Boolean).map(line => '<div>' + esc(line) + '</div>').join('');
   const targetNeeds = { ...(starter?.materials || {}), compute: Math.max(2, Number(starter?.materials?.compute) || 0) };
   const targetMissing = Object.entries(targetNeeds).map(([id, count]) => {
     const item = inventory.get(id);
     const missing = Math.max(0, count - Math.max(0, Number(item?.count || 0) - Number(item?.packedCount || 0)));
     return missing ? (MATERIAL_LABELS[id] || item?.name || id) + ' ×' + missing : '';
   }).filter(Boolean);
-  $('#setup-gap').textContent = project
-    ? (experiment?.disabled && experiment.reason ? '实验准备：' + experiment.reason : '材料就绪，可以继续实验')
+  $('#setup-gap').textContent = project?.status === 'submitted' ? '论文已投稿，可以返回研究工位查看审稿'
+    : project?.status === 'ready' ? '审稿通过，可以返回研究工位确认录用'
+    : project ? (experiment?.disabled && experiment.reason ? '实验准备：' + experiment.reason : '材料就绪，可以继续实验')
     : targetMissing.length ? '需要：' + targetMissing.join(' · ') : '材料就绪，可以开始研究';
-
-  const directions = Object.entries(research.directions || {}).map(([id, item]) => {
-    const label = (id === research.direction ? '● ' : '') + (item.name || id);
-    const disabled = Boolean(project) || id === research.direction;
-    return hubButton('research:direction:' + id, label, disabled, project ? '请先完成或放弃当前项目' : '');
-  }).join('');
-  const actions = (research.actions || []).map(action => '<div>' + hubButton(action.id, action.name, action.disabled, action.reason)
-    + (action.reason ? '<small class="disabled-reason">' + esc(action.reason) + '</small>' : '') + '</div>').join('');
-  $('#research-actions').innerHTML = directions + actions;
-
-  const shopNames = new Map((hub.shop || []).map(item => [item.id, item.name]));
-  $('#research-templates').innerHTML = project
-    ? '<article class="item-card"><div class="item-copy"><div class="item-title">' + esc(project.title || project.type) + '</div><div class="meta">' + esc(project.status || '') + ' · 已完成 ' + number(project.runs) + '/6 轮 · 质量 ' + number(project.quality) + '/' + number(project.target) + '</div></div></article>'
-    : templates.map(template => {
-      const materials = Object.entries(template.materials || {}).map(([id, count]) => (shopNames.get(id) || id) + ' ×' + count).join('、');
-      return '<article class="item-card"><div class="item-copy"><div class="item-title">' + esc(template.name) + '</div><div class="meta">立项材料：' + esc(materials) + ' · ' + number(template.cost) + ' 经费</div><div class="item-controls">' + hubButton('research:start:' + template.id, '创建课题', template.disabled, template.reason) + '</div>' + (template.reason ? '<small class="disabled-reason">' + esc(template.reason) + '</small>' : '') + '</div></article>';
-    }).join('') || '<div class="empty">当前没有可创建的研究项目。</div>';
-  $('#research-preparations').innerHTML = (research.preparations || []).map(item => hubButton('research:prepare:' + item.id, '整理 ' + item.inputName + ' → ' + item.outputName, item.disabled, item.reason)).join('');
-  $('#research-papers').innerHTML = papers.length
-    ? '<strong>已录用论文 ' + papers.length + ' 篇</strong><div class="meta">' + papers.slice(-4).reverse().map(paper => esc(paper.title || paper.type || '研究论文') + ' · 质量 ' + number(paper.quality)).join('<br>') + '</div>'
-    : '<span class="meta">尚无已录用论文；完成实验、投稿与审稿后会记录于此。</span>';
 }
 
 function renderInventory() {
@@ -635,20 +597,24 @@ function renderGenericActions(target, actions, skip, probabilities) {
   target.innerHTML = list.map(action => {
     const isSearch = action.kind === 'search' || /^search(?::|$)/.test(action.id);
     const isExtract = action.id === 'extract';
-    const detail = action.disabled ? action.reason : isSearch ? '心力 −1' : isExtract ? '结束远征，带回收获' : formatCost(action.cost);
+    const detail = action.disabled ? action.reason : isSearch ? '心力 −1' : isExtract ? '结束远征，带回收获' : action.id === 'take:available' ? '其余发现将放弃' : action.id === 'take:skip' ? '保留原背包' : formatCost(action.cost);
     return '<button type="button" class="button ' + (isSearch ? 'primary' : '') + '" data-action="' + attr(action.id) + '" data-server-disabled="' + Boolean(action.disabled) + '" ' + (action.disabled || pending || uncertainMutation ? 'disabled' : '') + '>' + esc(isSearch ? '搜索一次' : action.name || action.id) + (detail ? '<small>' + esc(detail) + '</small>' : '') + '</button>';
   }).join('') || '<span class="tiny">当前没有可执行行动。</span>';
 }
 
 function renderEventChoices(actions, hasPendingLoot = false) {
   const openChoices = new Set([...$('#event-choices').querySelectorAll('details[open]')].map(el => el.dataset.choiceDetail));
-  $('#event-choices').innerHTML = (actions || []).map((action, index) => {
+  const unavailableOpen = $('#event-unavailable-options')?.open;
+  const renderChoice = action => {
     const leave = exitAction(action);
     const cost = formatCost(action.cost);
     const outlook = leave ? '结束本次远征' : action.outlook || (action.probability == null ? '按方案执行' : likelihoodLabel(action.probability));
     const outcomes = leave && action.exitProbabilities ? exitPreview(action.exitProbabilities) : '成功：' + plainOutcome(action.success || '按方案执行') + ' 未解决：' + plainOutcome(action.failure || '无额外变化');
     return '<article class="decision-option' + (action.disabled ? ' is-disabled' : '') + '"><button type="button" class="button" data-action="' + attr(action.id) + '" data-server-disabled="' + Boolean(action.disabled) + '" ' + (action.disabled || pending || uncertainMutation ? 'disabled' : '') + '>' + esc(action.name || action.id) + '<small>' + esc(outlook) + '</small></button><div class="decision-cost">' + esc(cost || '不消耗资源') + '</div><details data-choice-detail="' + attr(action.id) + '" ' + (openChoices.has(action.id) ? 'open' : '') + '><summary>可能的结果</summary><div class="decision-outcomes">' + esc(outcomes) + '</div></details>' + (action.reason ? '<p class="disabled-reason">' + esc(action.reason) + '</p>' : '') + '</article>';
-  }).join('');
+  };
+  const enabled = (actions || []).filter(action => !action.disabled);
+  const unavailable = (actions || []).filter(action => action.disabled);
+  $('#event-choices').innerHTML = enabled.map(renderChoice).join('') + (unavailable.length ? '<details id="event-unavailable-options" class="unavailable-options" ' + (unavailableOpen ? 'open' : '') + '><summary>条件不足的方案（' + unavailable.length + '）</summary><div>' + unavailable.map(renderChoice).join('') + '</div></details>' : '');
 }
 
 function formatCost(cost) {
@@ -662,7 +628,7 @@ function renderTurnResult(current) {
   $('#raid-turn-card').classList.toggle('hidden', !action);
   if (!action) return;
   $('#raid-turn-title').textContent = action.title || '本轮结果';
-  $('#raid-turn-text').textContent = plainOutcome(action.text);
+  $('#raid-turn-text').textContent = plainOutcome(current.event ? String(action.text || '').replace(/\s*遇到[^。]*。/g, '') : action.text);
   const changes = [['心力', action.willDelta, false], ['人脉', action.networkDelta, false]];
   $('#raid-turn-changes').innerHTML = changes.filter(([, value]) => Number.isFinite(value) && value !== 0).map(([label, value, harmfulIncrease]) => {
     const good = harmfulIncrease ? value < 0 : value > 0;
@@ -696,7 +662,7 @@ function renderRaid(current) {
   $('#raid-heading').textContent = [venue.name || venue.id || '概率远征', configuration].filter(Boolean).join(' · ');
   $('#raid-status').textContent = current.status === 'ended' ? '已结算' : '行动中';
   const risk = riskLabel(stats.risk);
-  $('#raid-statusline').innerHTML = '<span>心力 <b>' + number(stats.will) + '/' + number(stats.willMax) + '</b></span><span>背包 <b>' + number(current.bagUsed) + '/' + number(current.bagCap) + '</b></span><span>形势 <b>' + esc(risk) + '</b></span>';
+  renderFieldScene(current, { scene: $('#field-scene'), depth: $('#field-depth'), status: $('#raid-statusline'), next: $('#field-next-step') });
   const expedition = current.expedition || {};
   const condition = expedition.condition;
   $('#expedition-context').innerHTML = condition ? '<strong>' + esc(condition.name) + '<small class="depth-label">' + esc(expedition.depthLabel || '') + '</small></strong><span>' + esc(condition.description) + '</span>' + (expedition.recentEffect ? '<small>' + esc(expedition.recentEffect.name + ' · ' + expedition.recentEffect.description) + '</small>' : '') : '<strong>初到现场</strong><span>留意线索，选择你的搜索方式</span>';
@@ -733,8 +699,8 @@ function renderRaid(current) {
   $('#raid-event-card').classList.toggle('hidden', !event);
   ['opportunity', 'danger', 'social'].forEach(tone => $('#raid-event-card').classList.toggle('tone-' + tone, event?.tone === tone));
   if (event) {
-    $('#event-title').textContent = [event.name, event.title].filter(Boolean).join(' · ') || '临场遭遇';
-    $('#event-text').textContent = plainOutcome(event.text || '');
+    $('#event-title').textContent = event.kind === 'npc' ? [event.name, event.title].filter(Boolean).join(' · ') : event.title || event.name || '临场遭遇';
+    $('#event-text').textContent = plainOutcome(event.text || '').replace(/\s*当前交流方向：[^。]*。/g, '');
     $('#event-type-label').textContent = event.typeLabel || '人物交流';
     $('#event-image').src = EVENT_ART.has(event.image) ? event.image : '/assets/generated/scholar.png';
     $('#event-image').alt = event.typeLabel || '人物交流';
@@ -765,6 +731,10 @@ function renderRaid(current) {
   }
   renderGenericActions($('#raid-actions'), actions, action => /^(drop|use|backup|take|respond|event):/.test(action.id) || (/^search(?::|$)/.test(action.id) && action.id !== searchApproach), probabilities);
   const blocked = Boolean(current.event || pendingLoot.length);
+  $('#field-search-controls').hidden = blocked;
+  const decision = $('#field-decision');
+  if (pendingLoot.length) decision.insertBefore($('#pending-loot-card'), $('#raid-event-card'));
+  else decision.insertBefore($('#raid-event-card'), $('#pending-loot-card'));
   $('#search-approaches').hidden = blocked;
   $('#approach-hint').hidden = blocked;
   $('#raid-actions').hidden = blocked;
@@ -982,6 +952,7 @@ $('#hub-start-raid').addEventListener('click', () => {
 
 $('#hub-screen').addEventListener('click', event => {
   const button = event.target.closest('[data-hub-action]');
+  if (button && !button.disabled && button.dataset.hubAction === 'research:abandon' && !confirm('放弃当前课题？已投入的材料与经费不会返还。')) return;
   if (button && !button.disabled) submitApi('/api/hub/action', { action: button.dataset.hubAction }, '正在更新工位存档……');
 });
 $('#raid-screen').addEventListener('click', event => {
