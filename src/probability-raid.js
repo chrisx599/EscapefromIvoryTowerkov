@@ -3,6 +3,7 @@ import { GEAR } from './loot-content.js';
 import { DIRECTIONS, skillLevels } from './research.js';
 import { likelihoodLabel, riskLabel, encounterLabel } from '../public/expedition-language.js';
 import { CAREER_TALENTS } from '../public/career-talents.js';
+import { prepareSurpriseEncounter } from './encounter-surprises.js';
 import { normalizeStories, academicStoriesView, academicStoryCandidates, academicStoryWeight,
   academicStoryCallbackReady, storyResolutionAllowed, recordAcademicStory, withAcademicStoryEcho } from './academic-stories.js';
 export { normalizeStories } from './academic-stories.js';
@@ -920,6 +921,7 @@ export function createProbabilityRaid(options = {}) {
     log: [],
     result: null,
     probabilityVersion: 3,
+    ...(options.surprise === true ? { encounterVersion: 2, resolvedEventIds: [] } : {}),
     encounterPacing: { eligibleSearches: 0, dryStreak: 0, firstEventSeen: false },
     lastAction: null,
     expedition: { conditionId: 'arrival', searchesInCondition: 0, depth: 0, lastApproach: 'steady', effect: null },
@@ -995,6 +997,9 @@ const EVENT_LEAVE_CHOICE = {
   cost: {}, check: null,
   onSuccess: { riskDelta: 4, text: '你放弃当前机会，带着现有收获撤离。' },
 };
+const SURPRISE_LEAVE_CHOICE = { key: 'leave', name: '撤离', label: '撤离', exit: true,
+  cost: {}, onSuccess: { text: '你结束交谈，转身撤离。' } };
+const eventLeaveChoice = run => run.event?.encounterVersion === 2 ? SURPRISE_LEAVE_CHOICE : EVENT_LEAVE_CHOICE;
 
 function countBagItem(run, id) {
   return (run.bag || []).reduce((count, itemId) => count + Number(itemId === id), 0);
@@ -1115,6 +1120,11 @@ function choiceCostText(choice) {
 
 function eventAction(run, choice) {
   const reason = choice.exit && run.pendingLoot?.length ? '先整理本轮发现，再选择撤离。' : requirementsReason(run, choice);
+  if (run.event.encounterVersion === 2) return {
+    id: `event:${choice.key}`, name: choice.label || choice.name, label: choice.label || choice.name,
+    disabled: !!reason, reason, endsRaid: choice.exit === true,
+    ...(choice.talentUse ? { talent: true } : {}),
+  };
   const probability = eventChoiceProbability(run, choice);
   const event = run.event;
   const successMomentum = !choice.exit && eventMomentum(event, true, choice);
@@ -1153,8 +1163,8 @@ function eventActionSpecs(run) {
   const event = run.event;
   if (!event) return [];
   const choices = [...event.choices];
-  if (!event.story && event.type === 'npc' && normalizeRaidTalent(run.talent)?.id === 'connector') choices.push(CONNECTOR_CHOICE);
-  choices.push(EVENT_LEAVE_CHOICE);
+  if (event.encounterVersion !== 2 && !event.story && event.type === 'npc' && normalizeRaidTalent(run.talent)?.id === 'connector') choices.push(CONNECTOR_CHOICE);
+  choices.push(eventLeaveChoice(run));
   return choices.map(choice => eventAction(run, choice));
 }
 
@@ -1220,28 +1230,36 @@ function applyEventEffect(run, event, effect = {}, outcome = 'success') {
 function resolveEvent(run, id) {
   const event = run.event;
   const actionId = id.slice('event:'.length);
+  if (event.encounterVersion === 2 && (run.resolvedEventIds || []).includes(event.id)) return responseFailure('这个事件已经结算。');
   if (!storyResolutionAllowed(run, event)) return responseFailure('这段奇遇已经结算，不能重复领取结果。');
-  const choice = actionId === 'leave' ? EVENT_LEAVE_CHOICE
-    : actionId === CONNECTOR_CHOICE.key && !event.story && event.type === 'npc' && normalizeRaidTalent(run.talent)?.id === 'connector'
+  const choice = actionId === 'leave' ? eventLeaveChoice(run)
+    : actionId === CONNECTOR_CHOICE.key && event.encounterVersion !== 2 && !event.story && event.type === 'npc' && normalizeRaidTalent(run.talent)?.id === 'connector'
       ? CONNECTOR_CHOICE : event.choices.find(row => row.key === actionId);
   if (!choice) return responseFailure('当前事件没有这个处理方案。');
   const publicAction = eventAction(run, choice);
   if (publicAction.disabled) return responseFailure(publicAction.reason || '当前条件不足。');
+  const probability = eventChoiceProbability(run, choice);
+  if (event.encounterVersion === 2) {
+    run.resolvedEventIds ||= [];
+    run.resolvedEventIds.push(event.id);
+  }
   const consumed = applyEventCost(run, choice);
   if (choice.exit) {
     const effect = choiceEffect(choice, 'success');
-  const result = applyEventEffect(run, event, effect, 'leave');
+    const result = applyEventEffect(run, event, effect, 'leave');
     run.event = null;
     run.encounterCooldown = true;
     run.pendingAutoExtract = true;
-    log(run, 'event', `${effect.text || publicAction.success} 风险增加到 ${run.stats.risk}。${consumed.length ? `消耗了${consumed.map(itemName).join('、')}。` : ''}`);
+    log(run, 'event', `${effect.text || publicAction.success}${event.encounterVersion === 2 ? '' : ` 风险增加到 ${run.stats.risk}。`}${consumed.length ? `消耗了${consumed.map(itemName).join('、')}。` : ''}`);
     if (!run.pendingLoot.length) finishExtraction(run, true);
-    return { ok: true, eventSuccess: null, itemsAdded: result.added, endsRaid: true, text: publicAction.success };
+    return { ok: true, eventSuccess: null, itemsAdded: result.added, endsRaid: true,
+      text: event.encounterVersion === 2 ? run.result?.summary || effect.text : publicAction.success };
   }
 
-  const probability = publicAction.probability;
   const success = choice.check ? rollPercent(run, probability) : true;
   const effect = choiceEffect(choice, success ? 'success' : 'failure');
+  const description = event.encounterVersion === 2 ? effectSummary(run, event, { ...choice, cost: {} }, effect)
+    : success ? publicAction.success : publicAction.failure;
   const result = applyEventEffect(run, event, effect, success ? 'success' : 'setback');
   if (event.type === 'npc' && choice.xp !== false) run.history.push(`npc:reply:${event.id}`);
   run.event = null;
@@ -1250,13 +1268,14 @@ function resolveEvent(run, id) {
   const momentumId = eventMomentum(event, success, choice);
   run.expedition = expeditionState(run);
   if (momentumId) run.expedition.effect = { id: momentumId, remainingSearches: 2 };
-  const description = success ? publicAction.success : publicAction.failure;
   log(run, 'event', `${description}${consumed.length ? ` 消耗了${consumed.map(itemName).join('、')}。` : ''}`);
+  if (event.encounterVersion === 2 && run.stats.will > 0) run.pendingAutoExtract = false;
   if (run.stats.will <= 0) {
     run.pendingAutoExtract = true;
     if (!run.pendingLoot.length) finishExtraction(run, true);
   }
-  return { ok: true, eventSuccess: success, itemsAdded: result.added, endsRaid: false, text: description };
+  return { ok: true, eventSuccess: success, itemsAdded: result.added, endsRaid: false, text: description,
+    ...(event.encounterVersion === 2 ? { brief: effect.brief || effect.text?.split(/[，。]/)[0] } : {}) };
 }
 
 function eventView(run) {
@@ -1267,6 +1286,7 @@ function eventView(run) {
     name: event.name,
     title: event.title,
     text: event.text,
+    ...(event.encounterVersion === 2 ? { encounterVersion: 2, prompt: event.prompt } : {}),
     kind: event.type,
     ...(event.story ? { story: clone(event.story) } : {}),
     ...(event.storyEcho ? { storyEcho: event.storyEcho } : {}),
@@ -1399,6 +1419,7 @@ export function probabilityRaidView(run) {
   return {
     mode: PROBABILITY_MODE,
     probabilityVersion: 3,
+    ...(run.encounterVersion === 2 ? { encounterVersion: 2 } : {}),
     raidId: run.raidId,
     revision: Math.max(0, Number(run.revision) || 0),
     status: run.status,
@@ -1463,6 +1484,8 @@ function commitAction(run, text, type = 'action', before = null, details = {}) {
   run.lastAction = {
     title: details.title || ({ search: '搜索结果', event: '事件处理', result: '撤离结算', loot: '物品整理', inventory: '背包整理', backup: '材料保护', supply: '补给使用' }[type] || '行动结果'),
     text: details.text || text || '行动已结算。',
+    ...(run.encounterVersion === 2 ? { brief: Array.from(details.brief || details.text?.split(/[。]/)[0]
+      || text?.split(/[。]/)[0] || '行动已结算').slice(0, 24).join('') } : {}),
     riskDelta: round1((Number(run.stats.risk) || 0) - (Number(stateBefore.risk) || 0)),
     willDelta: round1((Number(run.stats.will) || 0) - (Number(stateBefore.will) || 0)),
     networkDelta: round1((Number(run.stats.network) || 0) - (Number(stateBefore.network) || 0)),
@@ -1486,7 +1509,7 @@ function chooseEvent(run) {
     let draw = nextRandom(run) * total;
     const event = stories.find(candidate => { draw -= academicStoryWeight(run, candidate); return draw < 0; }) || stories.at(-1);
     if (!run.storyRun) run.storyRun = { id: event.story.id, initialChapter: event.story.chapter - 1 };
-    return event;
+    return prepareSurpriseEncounter(run, event, () => nextRandom(run));
   }
   const pool = eventPool(run);
   if (!pool.length) return null;
@@ -1502,8 +1525,9 @@ function chooseEvent(run) {
     text: `${event.text} 当前交流方向：${DIRECTIONS[run.direction]?.name || '大模型'}。`,
   };
   chosen.choices = clone(event.choices || []);
+  if (run.encounterVersion === 2 && event.type === 'npc' && normalizeRaidTalent(run.talent)?.id === 'connector') chosen.choices.push(CONNECTOR_CHOICE);
   chosen.typeLabel = EVENT_TYPE_LABELS[event.type] || '人物事件';
-  return withAcademicStoryEcho(run, chosen);
+  return prepareSurpriseEncounter(run, withAcademicStoryEcho(run, chosen), () => nextRandom(run));
 }
 
 function validProtectedItem(run) {
@@ -1659,6 +1683,7 @@ export function actProbabilityRaid(run, action) {
     const committed = commitAction(run, '', type, before, {
       title: result.endsRaid ? '事件离场' : '事件处理',
       text: result.text,
+      brief: result.brief,
       itemsAdded: result.itemsAdded || [],
       eventTriggered: null,
     });

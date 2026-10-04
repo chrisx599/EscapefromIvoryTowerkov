@@ -4,23 +4,23 @@ const DEFINITIONS = {
   reviewer_printer: {
     title: '审稿打印机觉醒', type: 'technical', name: '审稿人二号打印机',
     image: '/assets/generated/research-desk.png',
-    branches: { evidence: '交出了真实样本', rebuttal: '写了有礼貌的反驳' },
+    branches: { evidence: '交出了真实样本', rebuttal: '写了有礼貌的反驳', interrupted: '打印机卡住了，你留下了待核对的纸条' },
     outcomes: { reproducible: '打印机学会了复现', boundaries: '拒稿意见终于有了边界',
-      rebuttal_win: '打印机撤回了无限实验要求', rebuttal_loss: '机器坚持大修，你保住了结论边界', declined: '你拒绝为打印机无限加班' },
+      rebuttal_win: '打印机撤回了无限实验要求', rebuttal_loss: '机器坚持大修，你保住了结论边界', setback: '打印机又卡纸了，这次没有拿到资料', declined: '你拒绝为打印机无限加班' },
   },
   stamp_maze: {
     title: '公章证明它自己', type: 'route', name: '会务处自助盖章机',
     image: '/assets/generated/poster-board.png',
-    branches: { record: '留下了可追溯的盖章存根', sponsor: '请熟人替你作了担保', negotiated: '约定了只补一轮材料' },
+    branches: { record: '留下了可追溯的盖章存根', sponsor: '请熟人替你作了担保', negotiated: '约定了只补一轮材料', interrupted: '窗口暂时关了，你留着一张未盖章的号码纸' },
     outcomes: { filed: '循环证明被装订成了有限页', shortcut: '你带着样本走了人工窗口', repaid: '你还清了这一笔人情',
-      negotiated: '窗口遵守了事先约定', declined: '你退出了公章的自我证明' },
+      negotiated: '窗口遵守了事先约定', setback: '窗口提前关了，这次没有办成', declined: '你退出了公章的自我证明' },
   },
   faculty_cat: {
     title: '院长猫的署名要求', type: 'npc', name: '院长猫',
     image: '/assets/generated/scholar.png',
-    branches: { fed: '用咖啡券换了猫粮', respected: '给猫留了一把空椅子', negotiated: '约定猫只旁听、不署名' },
+    branches: { fed: '用咖啡券换了猫粮', shared_meal: '帮志愿者摆好了猫粮', respected: '给猫留了一把空椅子', negotiated: '约定猫只旁听、不署名', interrupted: '猫躲进了桌底，只留下一串爪印' },
     outcomes: { side_door: '猫带你走了无须答辩的侧门', acknowledged: '猫被写进了致谢',
-      honest: '你没有让猫替实验背书', negotiated: '猫履行了旁听协议', declined: '你婉拒了猫的行政任命' },
+      honest: '你没有让猫替实验背书', negotiated: '猫履行了旁听协议', setback: '猫叼着材料跑远了，你没能追上', declined: '你婉拒了猫的行政任命' },
   },
 };
 export const ACADEMIC_STORY_IDS = Object.freeze(Object.keys(DEFINITIONS));
@@ -167,9 +167,9 @@ function catChapter(chapter, branch, talent) {
       decline('faculty_cat'),
     ],
   };
-  if (branch === 'fed') return {
+  if (branch === 'fed' || branch === 'shared_meal') return {
     title: '吃过猫粮的院长来兑现路线图',
-    text: '院长猫认出了给它换猫粮的人，用尾巴指向侧门，又按住一份数据样例。跟它离开可以把返程路走短；帮它整理样例则能带回材料，却要多花心力。',
+    text: `院长猫认出了${branch === 'shared_meal' ? '帮它摆好猫粮' : '给它换猫粮'}的人，用尾巴指向侧门，又按住一份数据样例。跟它离开可以把返程路走短；帮它整理样例则能带回材料，却要多花心力。`,
     choices: [
       finalChoice('cat-side-door', '跟猫走侧门，放弃它爪下的样例', 'side_door', { riskDelta: -8, support: 8, routeDepth: 0, text: '猫刷脸打开侧门。你回到靠近出口的位置，返程更稳妥；它爪下的样例留在了会场。' }),
       finalChoice('cat-sort-samples', '整理爪印样例，把猫写进致谢', 'acknowledged', { riskDelta: -2, rewardId: 'dataset', text: '样例整理完成。你把猫写进致谢，带走了可用的数据，没有给它虚假的作者身份。' }, { cost: { will: 1 } }),
@@ -196,6 +196,26 @@ function catChapter(chapter, branch, talent) {
   };
 }
 
+// A setback in the first encounter is remembered as unfinished business, never
+// as a favor that succeeded. These callbacks also work across saved expeditions.
+function interruptedChapter(id) {
+  const content = {
+    reviewer_printer: { title: '打印机又吐出那张纸条', text: '打印机旁边放着你上次留下的纸条。', choices: [
+      finalChoice('printer-retry', '看看纸条', 'reproducible', { rewardId: 'src_code', text: '你找到了卡纸处，打印机交出了复现源码。' }),
+      finalChoice('printer-discuss', '敲敲机盖', 'boundaries', { rewardId: 'wind', text: '纸条写清了验证边界，你带走一条线索。' }),
+    ] },
+    stamp_maze: { title: '未盖章的号码纸', text: '窗口重新亮灯，你的号码还在屏幕上。', choices: [
+      finalChoice('stamp-return', '递上号码纸', 'filed', { rewardId: 'wind', text: '窗口装订好记录，交来通行说明。' }),
+      finalChoice('stamp-inquire', '问问窗口', 'shortcut', { rewardId: 'dataset', text: '工作人员翻出一份留给你的公开样本。' }),
+    ] },
+    faculty_cat: { title: '桌底传来猫叫', text: '那串爪印又出现了，桌布轻轻动了一下。', choices: [
+      finalChoice('cat-look-under', '掀起桌布', 'acknowledged', { rewardId: 'dataset', text: '你整理好猫拨来的样本，把它写进了致谢。' }),
+      finalChoice('cat-wait-near', '蹲在桌边', 'honest', { rewardId: 'wind', text: '猫从桌底拖出一张写着研究方向的纸。' }),
+    ] },
+  };
+  return content[id];
+}
+
 export function academicStoryCandidates(run) {
   if (!academicStoriesEnabled(run)) return [];
   const stories = normalizeStories(run.stories);
@@ -210,7 +230,8 @@ export function academicStoryCandidates(run) {
     const definition = DEFINITIONS[id];
     const chapter = state.chapter + 1;
     const talent = typeof run.talent === 'string' ? run.talent : run.talent?.id;
-    const content = id === 'reviewer_printer' ? reviewerChapter(chapter, state.branch)
+    const content = chapter === 2 && state.branch === 'interrupted' ? interruptedChapter(id)
+      : id === 'reviewer_printer' ? reviewerChapter(chapter, state.branch)
       : id === 'stamp_maze' ? stampChapter(chapter, state.branch, talent)
         : catChapter(chapter, state.branch, talent);
     return { id: `story-${id}-${chapter}`, name: definition.name, type: definition.type,
@@ -271,19 +292,19 @@ export function withAcademicStoryEcho(run, event) {
   const cat = states.faculty_cat;
   let echo;
   let choice;
-  if (event.type === 'technical' && printer.chapter === 2 && printer.outcome !== 'declined') {
+  if (event.type === 'technical' && printer.chapter === 2 && !['declined', 'setback'].includes(printer.outcome)) {
     const hasMethod = printer.outcome === 'reproducible' || printer.outcome === 'rebuttal_win';
     echo = hasMethod ? '审稿打印机留下的复现规程，这次正好派上用场。' : '你记得那台打印机：先明确问题边界，再决定要不要返工。';
     choice = { key: 'story-echo', name: hasMethod ? '按打印机的复现规程处理' : '按旧约定隔离问题，不无限返工',
       cost: { will: 1 }, ...(hasMethod ? { requires: { src_code: 1 } } : {}),
       onSuccess: { riskDelta: hasMethod ? -7 : -3, text: hasMethod ? '你用留存的规程核对源码，问题稳定解决。打印机这次没有再吐出大修通知。' : '你隔离了有问题的部分，把工作限制在可验证的范围。' } };
-  } else if (event.type === 'route' && stamp.chapter === 2 && stamp.outcome !== 'declined') {
+  } else if (event.type === 'route' && stamp.chapter === 2 && !['declined', 'setback'].includes(stamp.outcome)) {
     const shortcut = stamp.outcome === 'shortcut';
     echo = shortcut ? '人工窗口还记得你，这次需要补一份可核验的线索。' : '先前结束的公章流程留下了有效回执。';
     choice = { key: 'story-echo', name: shortcut ? '交一条线索，补完人工窗口核查' : '出示旧回执，按有限流程通行',
       cost: shortcut ? { items: { wind: 1 } } : { will: 1 },
       onSuccess: { riskDelta: -5, support: 8, text: shortcut ? '人工窗口核对了线索，登记顺利结束。' : '工作人员核对旧回执，没有再要求你证明公章的资格。' } };
-  } else if (cat.chapter === 2 && cat.outcome !== 'declined' && (event.type === 'npc' || event.type === 'route')) {
+  } else if (cat.chapter === 2 && !['declined', 'setback'].includes(cat.outcome) && (event.type === 'npc' || event.type === 'route')) {
     const route = event.type === 'route' && ['side_door', 'negotiated'].includes(cat.outcome);
     echo = route ? '院长猫留下的侧门路线仍然可用。' : '你和院长猫说清贡献边界的事，已经成了会场里的一个小故事。';
     choice = { key: 'story-echo', name: route ? '沿院长猫的旧路线回到出口旁' : '讲清院长猫的真实贡献，重谈边界',

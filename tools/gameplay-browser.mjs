@@ -227,7 +227,8 @@ async function storyScenario(page, storyId, screenshots) {
   let current = await state(page);
   assert.equal(current.view.event.story.id, storyId);
   assert.equal(current.view.event.story.chapter, 1);
-  assert.equal(await page.locator('#event-story-context').isVisible(), true);
+  assert.equal(await page.locator('#event-story-context').count(), 0, 'story history should not create a persistent raid narrative panel');
+  assert.ok((await page.locator('#event-title').innerText()).trim().length <= 100, 'story events need one short current prompt');
   const choice = current.view.event.actions.find(row => !row.disabled && !row.endsRaid && row.id !== 'event:story-decline');
   assert.ok(choice, 'every fresh story offers a real branch without special resources');
   current = await clickAction(page, choice.id, false);
@@ -243,8 +244,9 @@ async function storyScenario(page, storyId, screenshots) {
   assert.equal(current.view.event.story.id, storyId);
   assert.equal(current.view.event.story.chapter, 2);
   assert.ok(current.view.event.story.priorChoice);
-  assert.ok((await page.locator('#event-story-context').innerText()).includes(current.view.event.story.priorChoice));
-  if (screenshots) await captureLayouts(page, '#raid-event-card', 'ui-v4-story');
+  assert.ok((await page.locator('#event-title').innerText()).trim(), 'the callback must still present its current choice prompt');
+  assert.equal(await page.locator('#event-story-context').count(), 0);
+  if (screenshots) await captureLayouts(page, '#raid-event-card', 'ui-v5-story');
   current = await reloadUnchanged(page, current, `${storyId} pending callback`);
   const finish = current.view.event.actions.find(row => !row.disabled && !row.endsRaid && row.id !== 'event:story-decline');
   assert.ok(finish);
@@ -269,19 +271,21 @@ async function activeTalentScenario(page, id) {
   const before = await state(page);
   assert.equal(before.view.talent.id, id);
   assert.equal(before.view.talent.used, false);
-  assert.equal(await page.locator('#field-talent').isVisible(), true);
+  assert.equal(await page.locator('#field-talent').count(), 0, 'talent prose must not recreate a status panel');
   let command;
   let selectedIndex;
-  if (id === 'connector') command = 'event:talent-negotiate';
+  if (id === 'connector') {
+    command = 'event:talent-negotiate';
+    if (before.view.event.encounterVersion === 2) assert.match(await page.locator(`[data-action="${command}"]`).innerText(), /人脉\s*1/,
+      'the special earned ability must reveal its real resource fee before the user chooses it');
+  }
   else {
     const available = before.view.talent.actions.find(row => !row.disabled);
     assert.ok(available);
     command = available.id;
     selectedIndex = Number(command.split(':').at(-1));
-    assert.equal(await page.locator('#raid-bag-details').evaluate(element => element.open), false);
-    await page.locator('#field-talent [data-open-talent-bag]').click();
-    assert.equal(await page.locator('#raid-bag-details').evaluate(element => element.open), true,
-      'the field ability shortcut opens the real bag');
+    assert.equal(await page.locator('#raid-bag-details').evaluate(element => element.tagName), 'SECTION');
+    assert.equal(await page.locator('#raid-bag').isVisible(), true, 'active abilities act on the always-visible real bag');
     const cell = page.locator('button.item-cell[data-item-zone="bag"]').nth(selectedIndex);
     await cell.click();
     assert.equal(await cell.getAttribute('aria-pressed'), 'true');
@@ -299,8 +303,7 @@ async function activeTalentScenario(page, id) {
   try { after = await clickAction(page, command, false); }
   finally { page.off('request', capture); }
   assert.ok(receipt?.requestId, 'the clicked ability must use the regular durable mutation receipt');
-  assert.equal(after.view.talent.used, true);
-  assert.match(await page.locator('#field-talent').innerText(), /本局已使用/);
+  assert.equal(after.view.talent.used, true, 'the real one-use talent budget is spent');
   assert.equal(after.hub.funding, before.hub.funding, 'using a talent cannot replay the promotion grant');
   const idsBefore = before.view.bag.map(row => row.id);
   const idsAfter = after.view.bag.map(row => row.id);
@@ -314,11 +317,12 @@ async function activeTalentScenario(page, id) {
     expected.push('compute');
     assert.deepEqual(idsAfter, expected, 'UI conversion consumes exactly the selected input for one compute card');
   } else {
-    assert.equal(after.view.stats.network, before.view.stats.network - 1);
+    assert.equal(after.view.stats.network, before.view.stats.network - 1,
+      'the explicit one-use connector ability spends exactly its displayed one-network fee');
     assert.equal(after.view.event, null);
   }
   after = await reloadUnchanged(page, after, `${id} used active ability`);
-  assert.match(await page.locator('#field-talent').innerText(), /本局已使用/);
+  assert.equal(after.view.talent.used, true, 'the real one-use talent budget is spent');
   assert.equal(await page.locator('#field-talent [data-open-talent-bag]').count(), 0);
   assert.ok(after.view.talent.actions.every(row => row.disabled), 'remaining material actions must obey the spent once-per-raid budget');
   const replayResponse = await page.request.post('/api/expedition/action', { data: receipt });

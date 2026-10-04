@@ -642,6 +642,7 @@ export function deployProbability(career, options = {}) {
     contacts: profile.contacts,
     stories: normalizeStories(profile.stories),
     talent: profile.research.talent,
+    surprise: true,
   });
   if (run.bag.length !== supplies.length) return { ok: false, reason: '补给放不进当前背包。' };
 

@@ -31,7 +31,6 @@ try {
   }
 } catch { /* In-memory retry protection remains available without storage. */ }
 let setupSelection = { venue: '', difficulty: '' };
-let searchApproach = 'search';
 let renderedRaidId = null;
 let requestSequence = 0;
 const WORKSPACES = {
@@ -152,7 +151,7 @@ function renderItemZone(zone, containerSelector, detailSelector, entries, emptyT
       + '" data-item-zone="' + attr(zone) + '" data-item-key="' + attr(entry.key) + '" data-item-id="' + attr(item.id || '') + '"'
       + (entry.index == null ? '' : ' data-item-index="' + attr(entry.index) + '"') + ' aria-pressed="' + chosen + '" aria-label="' + attr(label) + '" title="' + attr(label) + '">'
       + (entry.empty ? '<span class="empty-slot-symbol" aria-hidden="true">＋</span>' : itemIconHtml(item, 'item-icon-large'))
-      + '<span class="cell-name">' + esc(name) + '</span>'
+      + '<span class="cell-name">' + esc(zone === 'bag' || zone === 'pending' ? ({dataset:'数据包',src_code:'源码',compute:'算力卡',wind:'情报',coffee_ticket:'咖啡券',stomach_pill:'胃药',coop:'合作意向'}[item.id] || name) : name) + '</span>'
       + (entry.empty ? '' : '<span class="cell-count">' + (zone === 'shop' || zone === 'equipment-shop' ? '持有 ' : '×') + number(count) + '</span>')
       + (entry.state ? '<span class="cell-state">' + esc(entry.state) + '</span>' : '')
       + (entry.price == null ? '' : '<span class="cell-price">' + number(entry.price) + '</span>') + '</button>';
@@ -165,10 +164,16 @@ function renderItemDetail(zone) {
   if (!detail) return;
   const entry = context.entries.find(row => String(row.key) === selectedItems.get(zone));
   if (!entry) {
+    if (zone === 'bag' || zone === 'pending') { detail.replaceChildren(); detail.hidden = true; return; }
     detail.innerHTML = '<div class="item-detail-placeholder"><strong>选择一个物品</strong><p>点击格子查看用途和可用操作。</p></div>';
     return;
   }
   const item = entry.item || {};
+  if (zone === 'bag') {
+    detail.hidden = false;
+    detail.innerHTML = '<div class="bag-selected-heading"><div><strong>'+esc(item.name || item.id)+'</strong> <small>'+number(item.weight || 0)+' 格</small></div><button type="button" data-close-bag-item aria-label="收起物品">×</button></div><div class="bag-selected-actions">'+(entry.actions || '')+'</div>';
+    return;
+  }
   const quality = Object.hasOwn(QUALITY_NAMES, item.rarity) ? item.rarity : 'standard';
   const name = item.name || entry.name || '空槽';
   const facts = entry.empty ? [] : [
@@ -265,7 +270,7 @@ function renderPhaseNavigation() {
     if (selected) step.setAttribute('aria-current', 'step'); else step.removeAttribute('aria-current');
   });
   if (view && !isProbabilityRaidView(view)) updateAreaHeading('远征状态无法读取', '请点击同步进度重试。');
-  else if (current === 'raid') updateAreaHeading('远征现场', '先看风险，再选择搜索、应对或撤离。');
+  else if (current === 'raid') updateAreaHeading('远征', '');
   else if (current === 'result') updateAreaHeading('远征结算', '查看带回与损失，再决定下一步的准备。');
   else if (!hub) updateAreaHeading('正在读取工位', '正在找回你的材料和研究进度。');
 }
@@ -445,13 +450,8 @@ function renderSetup() {
   $('#setup-reason').textContent = selected && selected.reason || (poor ? '经费不足；学术交流免费开放。' : !difficulties.length ? '难度配置尚未加载，请同步进度。' : '');
 }
 
-function materialProbabilityHtml(materials, conditional = false) {
-  return (materials || []).map(item => {
-    const rate = Number(conditional ? item.conditionalProbability : item.hitProbability);
-    const label = rate >= 40 ? '常见' : rate >= 20 ? '偶有发现' : rate > 0 ? '较难寻找' : '暂无线索';
-    const hint = item.name + ' · ' + label + (Number(item.weightBonus) > 0 ? ' · 装备有帮助' : '');
-    return '<div data-material-id="' + attr(item.id) + '" title="' + attr(hint) + '">' + itemIconHtml(item, 'item-icon-small') + '<span>' + esc(MATERIAL_LABELS[item.id] || item.name) + '</span><strong>' + label + '</strong></div>';
-  }).join('');
+function materialProbabilityHtml(materials) {
+  return (materials || []).map(item => '<div data-material-id="' + attr(item.id) + '">' + itemIconHtml(item, 'item-icon-small') + '<span>' + esc(MATERIAL_LABELS[item.id] || item.name) + '</span></div>').join('');
 }
 
 function renderDifficultySetup(venues, difficulties) {
@@ -461,7 +461,6 @@ function renderDifficultySetup(venues, difficulties) {
   $('#setup-difficulty-options').innerHTML = difficulties.map(item => '<button type="button" data-difficulty-choice="' + attr(item.id) + '" aria-pressed="' + (item.id === setupSelection.difficulty) + '" ' + (item.disabled ? 'disabled' : '') + '><strong>' + esc(item.name) + '</strong></button>').join('');
   const description = difficulty?.id === 'easy' ? '从容一点，收获也少一些' : difficulty?.id === 'hard' ? '更多发现，也更考验临场应对' : '适合稳步探索';
   $('#setup-difficulty-description').textContent = description;
-  $('#setup-difficulty-preview').innerHTML = preview ? '<span>发现材料 <b>' + likelihoodLabel(preview.acquisition) + '</b></span><span>完整带回 <b>' + likelihoodLabel(preview.full) + '</b></span>' : '';
   $('#setup-material-pool').innerHTML = materialProbabilityHtml(preview?.materials || venue?.pool?.materials, true);
 }
 
@@ -576,12 +575,7 @@ function renderWarehouseUpgrade() {
   $('#warehouse-upgrade-reason').textContent = upgrade?.reason || '';
 }
 
-function exitAction(action) {
-  return action.endsRaid === true || Boolean(action.exitProbabilities) || action.id === 'respond:leave';
-}
-function exitPreview(probabilities) {
-  return '完整带回' + likelihoodLabel(probabilities?.full) + '；仍可能遗失物资';
-}
+function exitAction(action) { return action.endsRaid === true || action.id === 'event:leave' || action.id === 'respond:leave'; }
 
 function plainOutcome(value) {
   // Legacy saves may contain numeric odds in persisted logs; present them qualitatively too.
@@ -595,167 +589,90 @@ function plainOutcome(value) {
     .replace(/风险\s*[+＋]([\d.]+)/g, '风险上升').replace(/风险\s*[−-]([\d.]+)/g, '风险减轻');
 }
 
-function renderGenericActions(target, actions, skip, probabilities) {
-  const list = (actions || []).filter(action => !(skip || (() => false))(action));
-  target.innerHTML = list.map(action => {
-    const isSearch = action.kind === 'search' || /^search(?::|$)/.test(action.id);
-    const isExtract = action.id === 'extract';
-    const detail = action.disabled ? action.reason : isSearch ? '心力 −1' : isExtract ? '结束远征，带回收获' : action.id === 'take:available' ? '其余发现将放弃' : action.id === 'take:skip' ? '保留原背包' : formatCost(action.cost);
-    return '<button type="button" class="button ' + (isSearch ? 'primary' : '') + '" data-action="' + attr(action.id) + '" data-server-disabled="' + Boolean(action.disabled) + '" ' + (action.disabled || pending || uncertainMutation ? 'disabled' : '') + '>' + esc(isSearch ? '搜索一次' : action.name || action.id) + (detail ? '<small>' + esc(detail) + '</small>' : '') + '</button>';
-  }).join('') || '<span class="tiny">当前没有可执行行动。</span>';
+function renderGenericActions(target, actions) {
+  const names = { 'take:all': '全部装入', 'take:available': '能装多少装多少', 'take:skip': '放下' };
+  target.innerHTML = actions.map(action => actionButton(action.id, names[action.id] || action.name, action.disabled, action.disabled ? '背包装不下' : '', '')).join('');
 }
-
-function renderEventChoices(actions, hasPendingLoot = false) {
-  const openChoices = new Set([...$('#event-choices').querySelectorAll('details[open]')].map(el => el.dataset.choiceDetail));
-  const unavailableOpen = $('#event-unavailable-options')?.open;
-  const renderChoice = action => {
-    const leave = exitAction(action);
-    const cost = formatCost(action.cost);
-    const outlook = leave ? '结束本次远征' : action.outlook || (action.probability == null ? '按方案执行' : likelihoodLabel(action.probability));
-    const outcomes = leave && action.exitProbabilities ? exitPreview(action.exitProbabilities) : '成功：' + plainOutcome(action.success || '按方案执行') + ' 未解决：' + plainOutcome(action.failure || '无额外变化');
-    return '<article class="decision-option' + (action.disabled ? ' is-disabled' : '') + '"><button type="button" class="button" data-action="' + attr(action.id) + '" data-server-disabled="' + Boolean(action.disabled) + '" ' + (action.disabled || pending || uncertainMutation ? 'disabled' : '') + '>' + esc(action.name || action.id) + '<small>' + esc(outlook) + '</small></button><div class="decision-cost">' + esc(cost || '不消耗资源') + '</div><details data-choice-detail="' + attr(action.id) + '" ' + (openChoices.has(action.id) ? 'open' : '') + '><summary>可能的结果</summary><div class="decision-outcomes">' + esc(outcomes) + '</div></details>' + (action.reason ? '<p class="disabled-reason">' + esc(action.reason) + '</p>' : '') + '</article>';
-  };
-  const enabled = (actions || []).filter(action => !action.disabled);
-  const unavailable = (actions || []).filter(action => action.disabled);
-  $('#event-choices').innerHTML = enabled.map(renderChoice).join('') + (unavailable.length ? '<details id="event-unavailable-options" class="unavailable-options" ' + (unavailableOpen ? 'open' : '') + '><summary>条件不足的方案（' + unavailable.length + '）</summary><div>' + unavailable.map(renderChoice).join('') + '</div></details>' : '');
+function compactChoice(action) {
+  if (action.label) return action.label;
+  if (action.id === 'event:story-decline') return '去旁边看看';
+  if (action.id === 'event:talent-negotiate') return '聊两句';
+  return String(action.name || '试试看').replace(/^(?:花心力|消耗人脉)[，,：:]?/, '').replace(/[，,；;].*$/, '').slice(0, 14);
 }
-
-function formatCost(cost) {
-  if (cost == null || cost === '') return '';
-  if (typeof cost !== 'object') return String(cost);
-  return Object.entries(cost).map(([key, value]) => key + ' ' + value).join(' · ');
+function renderEventChoices(actions) {
+  $('#event-choices').innerHTML = (actions || []).filter(action => !exitAction(action) && !action.disabled).map(action => '<div class="decision-option"><button type="button" class="neutral-choice" data-action="' + attr(action.id) + '" data-server-disabled="false" ' + (pending || uncertainMutation ? 'disabled' : '') + '>' + esc(compactChoice(action)) + '</button></div>').join('');
 }
-
+function shortResult(action) {
+  if (action.brief) return action.brief;
+  if (action.type === 'search') return action.itemsAdded?.length ? '找到了点东西' : '这里翻过了';
+  if (action.type === 'loot') return action.itemsAdded?.length ? '装好了' : '继续走';
+  if (action.type === 'talent') return action.title || '处理好了';
+  return String(action.text || '').split(/[。！]/)[0].replace(/(?:风险|成功率|把握)[^，；]*[，；]?/g, '').slice(0, 28) || '继续走';
+}
 function renderTurnResult(current) {
   const action = current.lastAction;
-  $('#raid-turn-card').classList.toggle('hidden', !action);
-  if (!action) return;
-  $('#raid-turn-title').textContent = action.title || '本轮结果';
-  $('#raid-turn-text').textContent = plainOutcome(current.event ? String(action.text || '').replace(/\s*遇到[^。]*。/g, '') : action.text);
-  const changes = [['心力', action.willDelta, false], ['人脉', action.networkDelta, false]];
-  $('#raid-turn-changes').innerHTML = changes.filter(([, value]) => Number.isFinite(value) && value !== 0).map(([label, value, harmfulIncrease]) => {
-    const good = harmfulIncrease ? value < 0 : value > 0;
-    return '<span class="turn-change ' + (good ? 'positive' : 'negative') + '">' + label + ' ' + (value > 0 ? '+' : '−') + number(Math.abs(value)) + '</span>';
-  }).join('');
-  $('#raid-turn-items').innerHTML = (action.itemsAdded || []).map(item => '<div class="turn-item">' + itemIconHtml(item, 'item-icon-small')
-    + '<div>' + esc(item.name || item.id) + '</div>' + (item.pending ? '<span class="tiny">待整理</span>' : '') + '</div>').join('');
-}
-
-function renderEncounterPacing(current) {
-  const pacing = current.encounterPacing;
-  let text = '本局事件 ' + number(pacing.eventsUsed) + ' / ' + number(pacing.eventsLimit);
-  text += pacing.reason ? ' · ' + pacing.reason : '';
-  if (!current.event && !pacing.cooldown && Number.isFinite(pacing.searchesUntilGuaranteed) && pacing.searchesUntilGuaranteed > 0) {
-    text += ' · 最迟 ' + number(pacing.searchesUntilGuaranteed) + ' 次有效搜索内遇到事件';
+  // While an encounter or overflow needs a click, the live bag and that prompt
+  // are enough feedback. Don't stack the previous receipt beneath them.
+  const show = Boolean(action && !current.event && !current.pendingLoot?.length);
+  $('#raid-turn-card').classList.toggle('hidden', !show);
+  if (!show) {
+    $('#raid-turn-text').textContent = '';
+    $('#raid-turn-changes').replaceChildren();
+    $('#raid-turn-items').replaceChildren();
+    return;
   }
-  $('#encounter-pacing').textContent = plainOutcome(text);
+  $('#raid-turn-text').textContent = shortResult(action);
+  $('#raid-turn-changes').innerHTML = [['♥',action.willDelta],['☷',action.networkDelta]].filter(([,v])=>Number.isFinite(v)&&v!==0).map(([label,value])=>'<span class="raid-delta'+(value<0?' negative':'')+'">'+label+' '+(value>0?'+':'−')+number(Math.abs(value))+'</span>').join('');
+  $('#raid-turn-items').innerHTML = (action.itemsAdded || []).map(item => '<span class="raid-mini-loot" title="'+attr(item.name || item.id)+(item.pending?' · 待装入':'')+'">'+itemIconHtml(item,'item-icon-small')+(item.pending?'待装入':'+1')+'</span>').join('');
 }
-
 function renderRaid(current) {
-  if (current.raidId !== renderedRaidId) {
-    renderedRaidId = current.raidId; searchApproach = 'search';
-    ['#raid-bag-details', '#raid-journal', '#raid-observations'].forEach(selector => $(selector).open = false);
-  }
-  const probabilities = current.probabilities || {};
-  const stats = current.stats || {};
-  const venue = current.venue || {};
-  const difficulty = current.difficulty;
-  const school = typeof current.player?.school === 'object' ? current.player.school.name : current.player?.school;
-  const configuration = (difficulty.name || difficulty.id) + '难度';
-  $('#raid-heading').textContent = [venue.name || venue.id || '概率远征', configuration].filter(Boolean).join(' · ');
-  $('#raid-status').textContent = current.status === 'ended' ? '已结算' : '行动中';
-  const risk = riskLabel(stats.risk);
-  renderFieldScene(current, { scene: $('#field-scene'), depth: $('#field-depth'), status: $('#raid-statusline'), next: $('#field-next-step') });
-  const expedition = current.expedition || {};
-  const condition = expedition.condition;
-  $('#expedition-context').innerHTML = condition ? '<strong>' + esc(condition.name) + '<small class="depth-label">' + esc(expedition.depthLabel || '') + '</small></strong><span>' + esc(condition.description) + '</span>' + (expedition.recentEffect ? '<small>' + esc(expedition.recentEffect.name + ' · ' + expedition.recentEffect.description) + '</small>' : '') : '<strong>初到现场</strong><span>留意线索，选择你的搜索方式</span>';
-  $('#prob-acquisition').textContent = current.outlook?.acquisition || likelihoodLabel(probabilities.acquisition);
-  $('#prob-encounter').textContent = current.event ? '正在应对' : current.outlook?.encounter || likelihoodLabel(probabilities.encounter);
-  $('#prob-full').textContent = current.outlook?.extraction || likelihoodLabel(probabilities.full);
-  $('#raid-material-probabilities').innerHTML = materialProbabilityHtml(probabilities.materials);
-  $('#encounter-reason').textContent = plainOutcome(probabilities.encounterReason || '');
-  renderEncounterPacing(current);
-  renderTurnResult(current);
+  if (current.raidId !== renderedRaidId) { renderedRaidId = current.raidId; selectedItems.delete('bag'); }
+  $('#raid-heading').textContent = current.venue?.name || '远征';
+  renderFieldScene(current, { scene: $('#field-scene'), status: $('#raid-statusline') });
   $('#bag-capacity').textContent = number(current.bagUsed) + ' / ' + number(current.bagCap);
   const actions = current.actions || [];
   const bagActions = actions.filter(action => /^(drop|use|backup|talent):/.test(action.id));
-  const bag = current.bag || [];
-  const bagEntries = bag.map((item, index) => {
-    const applicable = bagActions.filter(action => action.id.endsWith(':' + index));
-    const controls = applicable.map(action => '<button class="button small" data-action="' + attr(action.id) + '" data-server-disabled="' + (action.disabled ? 'true' : 'false') + '" '
-      + (action.disabled || pending || uncertainMutation ? 'disabled' : '') + (action.reason ? ' title="' + attr(action.reason) + '"' : '') + '>' + esc(action.name) + '</button>').join('');
-    return { key: current.raidId + ':' + current.revision + ':' + index + ':' + item.id, item, index, count: 1,
-      state: item.protection === 'talent' ? '已封存' : item.protection === 'both' ? '封存与备份' : item.protected ? '已备份' : '', actions: controls || '<span class="tiny">这件物品暂时没有可用操作。</span>' };
+  const bagEntries = (current.bag || []).map((item,index) => {
+    const applicable = bagActions.filter(action => action.id.endsWith(':'+index));
+    const controls = applicable.map(action => {
+      const verb = action.id.split(':')[0];
+      const name = verb === 'drop' ? '放下' : verb === 'use' ? '使用' : verb === 'backup' ? '备份' : action.id.startsWith('talent:archive:') ? '封存' : '改装';
+      return actionButton(action.id,name,action.disabled,action.disabled?action.reason:'','');
+    }).join('');
+    return { key: current.raidId+':'+current.revision+':'+index+':'+item.id, item,index,count:1,
+      state: item.protection==='talent'?'封存':item.protected?'保护':'',actions:controls };
   });
-  const cancelBackup = actions.find(action => action.id === 'backup:none');
-  if (cancelBackup) bagEntries.filter(entry => entry.item.protected && entry.item.protection !== 'talent').forEach(entry => {
-    entry.actions += actionButton(cancelBackup.id, cancelBackup.name, cancelBackup.disabled, cancelBackup.reason, '');
+  const cancelBackup=actions.find(action=>action.id==='backup:none');
+  if(cancelBackup) bagEntries.filter(entry=>entry.item.protected && entry.item.protection!=='talent').forEach(entry=>{
+    entry.actions+=actionButton(cancelBackup.id,'取消备份',cancelBackup.disabled,cancelBackup.reason,'');
   });
-  renderItemZone('bag', '#raid-bag', '#bag-item-detail', bagEntries, '还没有随身收获。');
-  const leader = current.player || {};
-  $('#raid-team').innerHTML = '<div class="item-card"><div class="player-avatar" role="img" aria-label="研究者朝南"></div><div class="item-copy"><div class="item-title">' + esc(leader.name || '研究者')
-    + '</div><div class="meta">' + esc(school || '') + ' ' + esc(leader.major || '') + '</div></div></div>';
-  $('#raid-objective').textContent = current.objective?.text || researchPreparationText() + ' 材料按地点自然出现，带回后投入研究。';
-  $('#raid-log').innerHTML = (current.log || []).slice(-30).reverse().map(entry => '<div class="log-row">' + esc(entry.text || entry.message || '') + '</div>').join('')
-    || '<div class="empty">行动记录会显示在这里。</div>';
-  const event = current.event && current.event.id ? current.event : null;
-  $('#raid-event-card').classList.toggle('hidden', !event);
-  ['opportunity', 'danger', 'social'].forEach(tone => $('#raid-event-card').classList.toggle('tone-' + tone, event?.tone === tone));
-  if (event) {
-    $('#event-title').textContent = event.kind === 'npc' ? [event.name, event.title].filter(Boolean).join(' · ') : event.title || event.name || '临场遭遇';
-    $('#event-text').textContent = plainOutcome(event.text || '').replace(/\s*当前交流方向：[^。]*。/g, '');
-    $('#event-type-label').textContent = event.typeLabel || '人物交流';
-    $('#event-image').src = EVENT_ART.has(event.image) ? event.image : '/assets/generated/scholar.png';
-    $('#event-image').alt = event.typeLabel || '人物交流';
-    const callback = $('#event-story-context');
-    callback.hidden = !event.story;
-    callback.className = 'story-callback';
-    callback.textContent = event.story ? (event.story.priorChoice || `${event.story.title || '校园奇遇'} · 第 ${event.story.chapter} 幕`) : '';
-    renderEventChoices(event.actions || [], Boolean(current.pendingLoot?.length));
-  } else {
-    $('#event-title').textContent = '';
-    $('#event-text').textContent = '';
-    $('#event-choices').replaceChildren();
-    $('#event-story-context').hidden = true;
-  }
-  const pendingLoot = current.pendingLoot || [];
-  const exitHint = $('#extraction-hint-text');
-  if (exitHint) exitHint.textContent = event && pendingLoot.length ? '先处理当前遭遇和待整理发现，再选择下一步。' : event ? '先处理当前遭遇；也可在遭遇中选择直接撤离。'
-    : pendingLoot.length ? '先整理本轮发现，再决定下一步。' : '随时可以撤离；继续深入也会增加变数。';
-  $('#pending-loot-card').classList.toggle('hidden', !pendingLoot.length);
-  renderItemZone('pending', '#pending-loot-items', '#pending-item-detail', pendingLoot.map((item, index) => ({
-    key: current.raidId + ':' + current.revision + ':' + index, item, index, state: '尚未拿取',
-    description: bonusText(item) + ' 这件发现尚未进入背包，请在本轮发现区域选择拿取或放弃。',
-  })));
-  renderGenericActions($('#pending-loot-actions'), actions, action => !action.id.startsWith('take:'));
-  const approaches = expedition.approaches || [];
-  if (approaches.length && !approaches.some(row => row.actionId === searchApproach)) searchApproach = 'search';
-  const selected = approaches.find(row => row.actionId === searchApproach);
-  $('#search-approaches').innerHTML = approaches.map(row => '<button type="button" data-search-approach="' + attr(row.actionId) + '" aria-pressed="' + (row.actionId === searchApproach) + '" ' + (row.disabled || pending || uncertainMutation ? 'disabled' : '') + '>' + esc(row.name) + '</button>').join('');
-  $('#approach-hint').textContent = selected?.hint || '';
-  if (selected?.outlook) {
-    $('#prob-acquisition').textContent = selected.outlook.acquisition;
-    $('#prob-encounter').textContent = current.event ? '正在应对' : selected.outlook.encounter;
-  }
-  renderGenericActions($('#raid-actions'), actions, action => /^(drop|use|backup|take|respond|event|talent):/.test(action.id) || (/^search(?::|$)/.test(action.id) && action.id !== searchApproach), probabilities);
-  const talent = current.talent;
-  const talentBox = $('#field-talent');
-  talentBox.hidden = !talent;
-  if (talent) {
-    talentBox.className = 'field-talent' + (talent.used ? ' is-used' : '');
-    const inventoryTalent = talent.id !== 'connector' && (talent.actions || []).some(action => !action.disabled);
-    talentBox.innerHTML = `<div><strong>${esc(talent.name)} · ${talent.used ? '本局已使用' : '本局可用一次'}</strong><small>${esc(talent.hint || talent.description)}</small></div>${!talent.used && inventoryTalent ? '<button type="button" class="button small" data-open-talent-bag>选择材料</button>' : ''}`;
-  }
-  const blocked = Boolean(current.event || pendingLoot.length);
-  $('#field-search-controls').hidden = blocked;
-  const decision = $('#field-decision');
-  if (pendingLoot.length) decision.insertBefore($('#pending-loot-card'), $('#raid-event-card'));
-  else decision.insertBefore($('#raid-event-card'), $('#pending-loot-card'));
-  $('#search-approaches').hidden = blocked;
-  $('#approach-hint').hidden = blocked;
-  $('#raid-actions').hidden = blocked;
-  if (pendingLoot.length && actions.find(action => action.id === 'take:all')?.disabled) $('#raid-bag-details').open = true;
+  renderItemZone('bag','#raid-bag','#bag-item-detail',bagEntries,'还空着');
+  const event=current.event;
+  $('#raid-event-card').classList.toggle('hidden',!event);
+  $('#event-title').textContent=event ? event.prompt || String(event.title || event.name || '碰到一件怪事').slice(0,28) : '';
+  renderEventChoices(event?.actions);
+  const pendingLoot=current.pendingLoot || [];
+  $('#pending-loot-card').classList.toggle('hidden',!pendingLoot.length);
+  renderItemZone('pending','#pending-loot-items','#pending-item-detail',pendingLoot.map((item,index)=>({key:current.raidId+':'+current.revision+':'+index,item,index,count:1})), '');
+  renderGenericActions($('#pending-loot-actions'), actions.filter(action=>action.id.startsWith('take:')));
+  const search=actions.find(action=>action.id==='search');
+  const exit=event ? event.actions?.find(exitAction) : actions.find(action=>action.id==='extract');
+  const dockButton=(action,name,cls,symbol)=>'<button type="button" class="button '+cls+'" data-action="'+attr(action?.id || (cls==='search-main'?'search':'extract'))+'" data-server-disabled="'+Boolean(!action || action.disabled)+'" '+(action?.disabled && action.reason?'title="'+attr(action.reason)+'" ':'')+(!action || action.disabled || pending || uncertainMutation?'disabled':'')+'><span class="action-symbol" aria-hidden="true">'+symbol+'</span>'+name+'</button>';
+  $('#raid-actions').innerHTML=dockButton(search,'搜索','search-main','⌕')+dockButton(exit,'撤离','extract-main','↗');
+  renderTurnResult(current);
   renderResult(current);
+}
+
+function animateBagChanges(previous, current) {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches || previous?.raidId !== current.raidId) return;
+  const counts = items => (items || []).reduce((out,item)=>{out[item.id]=(out[item.id]||0)+1;return out;},{});
+  const before=counts(previous.bag), after=counts(current.bag);
+  for (const [id,count] of Object.entries(after)) {
+    let added=count-(before[id]||0);
+    if(added<=0) continue;
+    const cells=$$('#raid-bag [data-item-id]').filter(cell=>cell.dataset.itemId===id).reverse();
+    for (const cell of cells.slice(0,added)) cell.classList.add('loot-flash');
+  }
 }
 
 function renderResult(current) {
@@ -950,14 +867,10 @@ async function submitApi(path, body, label) {
 }
 
 function focusRaidStep(previous, action) {
-  let card;
-  if (view.pendingLoot?.length && (!previous?.pendingLoot?.length || action?.startsWith('take:'))) card = $('#pending-loot-card');
-  else if (view.event && (!previous?.event || previous.event.id !== view.event.id || action?.startsWith('take:'))) card = $('#raid-event-card');
-  else if ((view.lastAction && view.revision !== previous?.revision) || /^search(?::|$)/.test(action || '') || /^(respond|event):/.test(action || '')) card = $('#raid-turn-card');
-  if (!card || card.classList.contains('hidden')) return;
-  const focus = card.querySelector('button:not(:disabled)') || card.querySelector('h2');
-  if (focus) { if (focus.tagName !== 'BUTTON') focus.tabIndex = -1; focus.focus({ preventScroll: true }); }
-  card.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
+  const target = view.pendingLoot?.length ? $('#pending-loot-actions button:not(:disabled)')
+    : view.event ? $('#event-choices button:not(:disabled)') : $('#raid-actions [data-action="search"]');
+  target?.focus({ preventScroll: true });
+  animateBagChanges(previous,view);
 }
 
 $('#hub-start-raid').addEventListener('click', () => {
@@ -979,19 +892,13 @@ $('#hub-screen').addEventListener('click', event => {
   if (button && !button.disabled) submitApi('/api/hub/action', { action: button.dataset.hubAction }, '正在更新工位存档……');
 });
 $('#raid-screen').addEventListener('click', event => {
-  if (event.target.closest('[data-open-talent-bag]')) {
-    const bag = $('#raid-bag-details'); bag.open = true;
-    bag.querySelector('summary').focus({ preventScroll: true });
-    bag.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() }); return;
-  }
-  const approach = event.target.closest('[data-search-approach]');
-  if (approach && !approach.disabled) { searchApproach = approach.dataset.searchApproach; renderRaid(view); $('[data-search-approach=\"' + searchApproach + '\"]')?.focus({ preventScroll: true }); return; }
+  if (event.target.closest('[data-close-bag-item]')) { selectedItems.delete('bag'); renderItemDetail('bag'); return; }
   const button = event.target.closest('[data-action]');
   if (!button || button.disabled || !isProbabilityRaidView(view)) return;
   submitApi('/api/expedition/action', { action: button.dataset.action, raidId: view.raidId, revision: view.revision }, '正在提交这一步行动……');
 });
 $('#result-return').addEventListener('click', () => submitApi('/api/hub/return', {}, '正在返回研究工位……'));
-$('#refresh-state').addEventListener('click', readState);
+$('#refresh-state')?.addEventListener('click', readState);
 $('#hub-refresh-state').addEventListener('click', readState);
 $('#setup-venue').addEventListener('change', () => {
   setupSelection.venue = $('#setup-venue').value;

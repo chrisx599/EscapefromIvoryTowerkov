@@ -738,16 +738,27 @@ test('probability API validates deployments and commits replay-safe rule actions
       assert.ok(current.view.event.actions.some(action => action.id.startsWith('event:') && action.endsRaid === false),
         'current events should expose generic event:* continuation actions');
       const exit = current.view.event.actions.find(action => action.endsRaid === true);
-      assert.ok(exit?.exitProbabilities && exit.id.startsWith('event:'), 'only explicitly terminal choices should carry their own exit distribution');
+      assert.ok(exit?.id.startsWith('event:'), 'an explicitly terminal action remains available');
       for (const action of current.view.event.actions) {
-        assert.equal(typeof action.cost, 'string');
-        assert.equal(typeof action.success, 'string');
-        assert.equal(typeof action.failure, 'string');
-        if (action.endsRaid) {
-          assert.equal(action.probability, undefined, 'terminal choices expose exit odds instead of a response-check rate');
-          assert.ok(action.exitProbabilities);
+        if (current.view.event.encounterVersion === 2) {
+          assert.equal(typeof current.view.event.prompt, 'string');
+          assert.ok(current.view.event.prompt.length <= 30);
+          assert.equal(typeof action.label, 'string');
+          assert.ok(action.label.length <= 12);
+          for (const key of ['cost', 'success', 'failure', 'probability', 'outlook', 'exitProbabilities']) {
+            assert.equal(action[key], undefined, `neutral encounters do not forecast ${key}`);
+          }
+          if (action.endsRaid) assert.equal(action.label, '撤离');
         } else {
-          assert.ok(Number.isFinite(action.probability) && action.probability >= 0 && action.probability <= 100);
+          assert.equal(typeof action.cost, 'string');
+          assert.equal(typeof action.success, 'string');
+          assert.equal(typeof action.failure, 'string');
+          if (action.endsRaid) {
+            assert.equal(action.probability, undefined, 'legacy terminal choices expose exit odds instead of a response-check rate');
+            assert.ok(action.exitProbabilities);
+          } else {
+            assert.ok(Number.isFinite(action.probability) && action.probability >= 0 && action.probability <= 100);
+          }
         }
       }
 
