@@ -8,9 +8,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
-import { careerView, createCareer, deployProbability, hubAct } from '../src/career.js';
+import { careerView, createCareer, deployProbability, hubAct, migrateCareer } from '../src/career.js';
 import { createProbabilityRaid, actProbabilityRaid, probabilityRaidView } from '../src/probability-raid.js';
 import { ITEMS } from '../src/content.js';
+import { nextResearchAction } from './research-qa.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ARTIFACTS = path.join(ROOT, '.artifacts');
@@ -22,8 +23,8 @@ const WAREHOUSE_DESKTOP_SHOT = path.join(ARTIFACTS, 'probability-warehouse-deskt
 const WAREHOUSE_MOBILE_SHOT = path.join(ARTIFACTS, 'probability-warehouse-mobile.png');
 const EVENT_DESKTOP_SHOT = path.join(ARTIFACTS, 'probability-event-desktop.png');
 const EVENT_MOBILE_SHOT = path.join(ARTIFACTS, 'probability-event-mobile.png');
-const RESEARCH_DESKTOP_SHOT = path.join(ARTIFACTS, 'ui-v3-research-desktop.png');
-const RESEARCH_MOBILE_SHOT = path.join(ARTIFACTS, 'ui-v3-research-mobile.png');
+const RESEARCH_DESKTOP_SHOT = path.join(ARTIFACTS, 'ui-v6-research-missing-1440.png');
+const RESEARCH_MOBILE_SHOT = path.join(ARTIFACTS, 'ui-v6-research-missing-390.png');
 const FIELD_DESKTOP_SHOT = path.join(ARTIFACTS, 'ui-v5-expedition-desktop.png');
 const FIELD_MOBILE_SHOT = path.join(ARTIFACTS, 'ui-v5-expedition-mobile.png');
 const FIELD_EVENT_DESKTOP_SHOT = path.join(ARTIFACTS, 'ui-v5-expedition-event-desktop.png');
@@ -79,7 +80,7 @@ async function assertReloadPreservesState(page, before, label) {
 function createResearchJourneyFixtures() {
   const supplied = createCareer(123456789);
   supplied.profile.funding = 5000;
-  Object.assign(supplied.profile.stash, { dataset: 3, src_code: 3, wind: 3, compute: 12 });
+  Object.assign(supplied.profile.stash, { dataset: 3, src_code: 3, wind: 3, compute: 30 });
   const act = (career, action) => {
     const result = hubAct(career, `research:${action}`);
     assert.equal(result.ok, true, `research fixture action ${action}: ${result.reason || ''}`);
@@ -92,25 +93,46 @@ function createResearchJourneyFixtures() {
   const experiment = structuredClone(supplied);
   const missing = structuredClone(supplied);
   delete missing.profile.stash.compute;
-  while (supplied.profile.research.project.runs < 2 || supplied.profile.research.project.quality < careerView(supplied).research.project.target) {
-    act(supplied, 'experiment');
-  }
+  const equipmentMissing = structuredClone(supplied);
+  equipmentMissing.profile.loadout.device = null;
+  act(supplied, 'experiment');
   const submit = structuredClone(supplied);
   act(supplied, 'submit');
   const review = structuredClone(supplied);
   act(supplied, 'review');
+  let returned = supplied.profile.research.project.status !== 'ready' ? structuredClone(supplied) : null;
+  for (let step = 0; supplied.profile.research.project.status !== 'ready' && step < 64; step += 1) {
+    act(supplied, nextResearchAction(supplied.profile.research));
+  }
+  assert.equal(supplied.profile.research.project.status, 'ready', 'real repeated experiments must eventually resolve the review');
   const ready = structuredClone(supplied);
   act(supplied, 'publish');
   const promotion = structuredClone(supplied);
   assert.equal(careerView(promotion).research.actions.find(action => action.id === 'research:promote').disabled, false,
     'promotion fixture must earn all its real prerequisites');
+  if (!returned) {
+    for (let seed = 1; seed <= 256 && !returned; seed += 1) {
+      const candidate = createCareer(seed * 7919);
+      Object.assign(candidate.profile.stash, { dataset: 1, src_code: 1, compute: 12 });
+      for (const id of ['start:replicate', 'experiment', 'experiment', 'submit', 'review']) act(candidate, id);
+      if (candidate.profile.research.project.status !== 'ready') returned = candidate;
+    }
+  }
+  assert.ok(returned, 'the seeded research model must produce real returned reviews');
+  const oldSix = structuredClone(returned);
+  Object.assign(oldSix.profile.research.project, { runs: 6, submittedRuns: 6, quality: 25, status: 'rejected' });
+  for (const key of ['evidence', 'successfulRuns', 'setbacks', 'preparation', 'lastOutcome']) delete oldSix.profile.research.project[key];
+  const legacySix = migrateCareer(JSON.stringify(oldSix));
   return [
     { name: 'empty', career: empty, action: null },
     { name: 'start', career: readyToStart, action: 'research:start:replicate' },
     { name: 'missing', career: missing, action: 'research:experiment', disabled: true },
     { name: 'experiment', career: experiment, action: 'research:experiment' },
+    { name: 'equipment-missing', career: equipmentMissing, action: 'research:experiment', disabled: true },
+    { name: 'legacy-six-round', career: legacySix, action: 'research:experiment' },
     { name: 'submit', career: submit, action: 'research:submit' },
     { name: 'review', career: review, action: 'research:review' },
+    { name: 'review-return', career: returned, action: 'research:experiment' },
     { name: 'ready', career: ready, action: 'research:publish' },
     { name: 'promotion', career: promotion, action: 'research:promote' },
   ];
@@ -1327,6 +1349,7 @@ async function assertTurnCardUi(page, state) {
     return;
   }
   await card.waitFor({ state: 'visible', timeout: 5000 });
+
   assert.ok((await card.innerText()).trim(), 'an action must receive concise actual-result feedback');
   assert.ok((await card.innerText()).trim().length <= 160, 'latest-action feedback must remain a short receipt, not a narrative panel');
   const reportedItems = state.view.lastAction?.itemsAdded || [];
@@ -1376,6 +1399,22 @@ async function assertResearchJourney(page, state, fixture) {
   const research = state.hub.research;
   const card = page.locator('#research-card');
   await card.waitFor({ state: 'visible', timeout: 5000 });
+  const titleContrast = await card.locator('#research-stage').evaluate(element => {
+    const components = color => (color.match(/[\d.]+/g) || []).map(Number);
+    const luminance = channels => channels.slice(0, 3).map(value => {
+      const channel = value / 255; return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+    const text = luminance(components(getComputedStyle(element).color));
+    let background = [255, 255, 255];
+    for (let parent = element; parent; parent = parent.parentElement) {
+      const color = components(getComputedStyle(parent).backgroundColor);
+      if (color.length >= 3 && (color.length === 3 || color[3] > 0)) { background = color; break; }
+    }
+    const back = luminance(background);
+    return (Math.max(text, back) + 0.05) / (Math.min(text, back) + 0.05);
+  });
+  assert.ok(titleContrast >= 4.5, `${fixture.name}: current title must remain readable against its actual background`);
+
   assert.doesNotMatch(await card.innerText(), /\b(?:experiment|submitted|revision|rejected|ready)\b/,
     'research stages should use meaningful player-facing labels rather than internal state names');
   const primary = card.locator('[data-research-primary]');
@@ -1388,14 +1427,14 @@ async function assertResearchJourney(page, state, fixture) {
       `${fixture.name}: the prominent action must respect real prerequisites`);
   }
   if (research.project) {
-    for (const [key, now, max] of [['runs', research.project.runs, 6], ['quality', research.project.quality, 100]]) {
-      const meter = card.locator(`[data-research-progress="${key}"]`);
-      assert.equal(await meter.count(), 1, `${key} needs one visual research progress indicator`);
-      assert.equal(Number(await meter.getAttribute('aria-valuenow')), Number(now), `${key} must display the actual project value`);
-      assert.equal(Number(await meter.getAttribute('aria-valuemax')), Number(max), `${key} must display the actual project limit or target`);
-      if (key === 'quality') assert.equal(Number(await meter.getAttribute('data-target')), research.project.target,
-        'the quality bar must mark the actual acceptance target separately from its 100-point scale');
-    }
+    const meter = card.locator('[data-research-progress="quality"]');
+    assert.equal(await meter.count(), 1, 'quality needs one factual progress indicator');
+    assert.equal(Number(await meter.getAttribute('aria-valuenow')), research.project.quality);
+    assert.equal(Number(await meter.getAttribute('aria-valuemax')), 100);
+    const runs = card.locator('#research-runs[data-research-progress="runs"]');
+    assert.equal(Number(await runs.getAttribute('data-completed-runs')), research.project.runs, 'completed experiments are real counts, with no artificial cap');
+    assert.equal(Object.hasOwn(research.project, 'target'), false, 'the public view must not expose an acceptance forecast');
+    assert.doesNotMatch(await card.innerText(), /质量目标|录用目标|达到目标|六轮上限|流派|档案派|联络派|巧匠派|成功率|录用率|把握|预计|预测/);
     if (fixture.action === 'research:experiment') {
       const action = research.actions.find(action => action.id === fixture.action);
       const actionsText = await page.locator('#research-actions').innerText();
@@ -1450,10 +1489,8 @@ async function runResearchJourneyScenarios(browser, base, saveDir, pageErrors, e
       for (const width of [1440, 390, 320]) {
         await page.setViewportSize({ width, height: width === 1440 ? 900 : 844 });
         await assertResearchJourney(page, state, fixture);
-        if (fixture.name === 'missing') {
-          await page.locator('#research-card').evaluate(element => element.scrollIntoView({ block: 'start' }));
-          await page.screenshot({ path: width === 1440 ? RESEARCH_DESKTOP_SHOT : width === 390 ? RESEARCH_MOBILE_SHOT : path.join(ARTIFACTS, 'ui-v3-research-320.png') });
-        }
+        await page.locator('#research-card').evaluate(element => element.scrollIntoView({ block: 'start' }));
+        await page.screenshot({ path: path.join(ARTIFACTS, `ui-v6-research-${fixture.name}-${width}.png`) });
       }
       state = await assertReloadPreservesState(page, state, `research ${fixture.name}`);
       await activateWorkspace(page, 'research');
@@ -1482,7 +1519,7 @@ async function runResearchJourneyScenarios(browser, base, saveDir, pageErrors, e
         assert.equal(afterAbandon.hub.funding, state.hub.funding, 'abandonment must not invent a refund');
         assert.deepEqual(afterAbandon.hub.items, state.hub.items, 'abandonment must not return spent material');
         assert.deepEqual(afterAbandon.hub.research.skills, state.hub.research.skills, 'abandonment must preserve earned skills');
-      } else if (fixture.name === 'experiment') {
+      } else if (fixture.name === 'experiment' || fixture.name === 'review-return' || fixture.name === 'legacy-six-round') {
         const after = await clickHubAction(page, fixture.action);
         assert.equal(after.hub.research.project.runs, state.hub.research.project.runs + 1, 'the primary experiment should add exactly one real run');
         assert.equal(after.hub.funding, state.hub.funding - state.hub.research.project.experimentCost, 'the primary experiment should charge its shown funding cost');
@@ -1539,7 +1576,7 @@ async function completeResearchThroughUi(page) {
   await startWait;
   await page.waitForFunction(() => !document.body.classList.contains('is-pending'), null, { timeout: 7000 });
 
-  for (let attempt = 0; attempt < 18; attempt += 1) {
+  for (let attempt = 0; attempt < 72; attempt += 1) {
     const current = await readState(page);
     assert.equal(current.phase, 'hub');
     const research = current.hub.research;
@@ -1553,8 +1590,9 @@ async function completeResearchThroughUi(page) {
     } else if (project.status === 'submitted') {
       await clickHubAction(page, 'research:review');
     } else if (['experiment', 'revision', 'rejected'].includes(project.status)) {
-      const canSubmit = project.runs >= 2 && project.runs > (project.submittedRuns || 0);
-      await clickHubAction(page, canSubmit ? 'research:submit' : 'research:experiment');
+      const next = nextResearchAction(research);
+      if (next === 'experiment' && !(current.hub.items.find(item => item.id === 'compute')?.storedCount > 0)) await clickHubAction(page, 'buy:compute');
+      await clickHubAction(page, `research:${next}`);
     } else {
       throw new Error(`unexpected project status: ${project.status}`);
     }
@@ -1954,9 +1992,9 @@ try {
   assert.deepEqual(imageFailures(responses), [], 'existing PNG image assets should load successfully');
   assert.equal(model.calls.length, 0, 'the probability UI and research loop must not call the AI provider');
   await fs.writeFile(path.join(ARTIFACTS, 'ui-v2-metrics.json'), JSON.stringify(firstScreenMetrics, null, 2) + '\n');
-  await fs.writeFile(path.join(ARTIFACTS, 'ui-v3-journey-metrics.json'), JSON.stringify(journeyMetrics, null, 2) + '\n');
+  await fs.writeFile(path.join(ARTIFACTS, 'ui-v6-journey-metrics.json'), JSON.stringify(journeyMetrics, null, 2) + '\n');
   console.log('First-screen text: ' + JSON.stringify(firstScreenMetrics));
-  console.log('Probability browser passed: single search, dominant live backpack, hidden probabilities, neutral event choices, concise receipts, accurate resource meters, eight research journey states, reload preservation, progressive disclosure, warehouse capacity/ownership, equipment swaps, uncertain-mutation replay, manual raids and events, paper review/acceptance/promotion, 320px/desktop/mobile, and local asset loading.');
+  console.log('Probability browser passed: single search, dominant live backpack, hidden probabilities, neutral event choices, concise receipts, accurate resource meters, eleven research journey states, reload preservation, progressive disclosure, warehouse capacity/ownership, equipment swaps, uncertain-mutation replay, manual raids and events, paper review/acceptance/promotion, 320px/desktop/mobile, and local asset loading.');
   console.log(`Screenshots: ${path.relative(ROOT, DESKTOP_SHOT)}, ${path.relative(ROOT, MOBILE_SHOT)}, ${path.relative(ROOT, DIFFICULTY_DESKTOP_SHOT)}, ${path.relative(ROOT, DIFFICULTY_MOBILE_SHOT)}, ${path.relative(ROOT, WAREHOUSE_DESKTOP_SHOT)}, ${path.relative(ROOT, WAREHOUSE_MOBILE_SHOT)}, ${path.relative(ROOT, EVENT_DESKTOP_SHOT)}, ${path.relative(ROOT, EVENT_MOBILE_SHOT)}`);
   console.log(`Intuitive-interface screenshots: ${[RESEARCH_DESKTOP_SHOT, RESEARCH_MOBILE_SHOT, FIELD_DESKTOP_SHOT, FIELD_MOBILE_SHOT, FIELD_EVENT_DESKTOP_SHOT, FIELD_EVENT_MOBILE_SHOT].map(file => path.relative(ROOT, file)).join(', ')}`);
 } catch (error) {

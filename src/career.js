@@ -641,7 +641,9 @@ export function deployProbability(career, options = {}) {
     network: profile.network,
     contacts: profile.contacts,
     stories: normalizeStories(profile.stories),
-    talent: profile.research.talent,
+    // Titles now provide automatic research support. Keep old active raid
+    // identities in their saved run, but never create a new faction ability.
+    talent: null,
     surprise: true,
   });
   if (run.bag.length !== supplies.length) return { ok: false, reason: '补给放不进当前背包。' };

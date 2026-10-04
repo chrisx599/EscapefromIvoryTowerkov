@@ -1,6 +1,8 @@
 # 逃离象牙塔夫 · 研究与生涯规则
 
-状态：已实现。规则位于 `src/research.js`，局外库存和结算位于 `src/career.js`，远征位于 `src/probability-raid.js`。
+历史规则说明：当前实验、审稿、职称与存档迁移已更新，请以 [RESEARCH_V6.md](RESEARCH_V6.md) 为准。
+
+规则位于 `src/research.js`，局外库存和结算位于 `src/career.js`，远征位于 `src/probability-raid.js`。
 
 本页描述当前研究与晋升系统，远征采用 [REVAMP.md](REVAMP.md) 的纯规则概率玩法。设备的实验能力与研究加成如下，探索效果由主规格和装备详情说明。
 

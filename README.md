@@ -1,6 +1,6 @@
 # 逃离象牙塔夫 · Escape from Ivory Towerkov
 
-《逃离象牙塔夫》（Escape from Ivory Towerkov）是一款科研题材的概率搜打撤与生涯游戏。当前版本 v0.9.0，采用正式科研工位和概率远征，无需 AI 模型或 Phaser。
+《逃离象牙塔夫》（Escape from Ivory Towerkov）是一款科研题材的概率搜打撤与生涯游戏。当前版本 v0.10.0，采用正式科研工位和概率远征，无需 AI 模型或 Phaser。
 
 ```sh
 npm install
@@ -19,9 +19,9 @@ npm start
 - 远征只保留一个搜索按钮和撤离按钮。背包常驻显示，事件是简短的中性选项。
 - 不提前显示概率、把握或可能结果；变化通过实际收获、心力变化与撤离结果体现。
 - 校园奇遇会记住你的选择。未完的故事会延续到之后的远征，已完成的故事保存在档案。
-- 晋升立即获得一次性支持经费；首次晋升选择档案派、联络派或巧匠派，得到每次远征可用的主动专长和研究加成。
+- 晋升立即获得一次性支持经费与自动研究支持，无需选择派系。实验与审稿受材料、设备、经验与论文证据共同影响，结果在行动后反馈。
 
-当前入口为 `public/index.html`，规则主规格为 [REVAMP.md](docs/REVAMP.md)，研究规则为 [RESEARCH.md](docs/RESEARCH.md)，文档导航为 [SPEC.md](docs/SPEC.md)。
+当前入口为 `public/index.html`，规则主规格为 [REVAMP.md](docs/REVAMP.md)，当前研究规则为 [RESEARCH_V6.md](docs/RESEARCH_V6.md)，文档导航为 [SPEC.md](docs/SPEC.md)。
 
 ## 存档与恢复
 

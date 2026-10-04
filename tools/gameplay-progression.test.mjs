@@ -4,6 +4,7 @@ import { createCareer, careerView, deployProbability, hubAct, migrateCareer, set
 import { actProbabilityRaid, createProbabilityRaid, probabilityRaidView } from '../src/probability-raid.js';
 import { DIRECTIONS, PROJECTS, STAGES } from '../src/research.js';
 import { ACADEMIC_STORY_IDS, academicStoryCandidates, normalizeStories } from '../src/academic-stories.js';
+import { finishPaper } from './research-qa.mjs';
 
 const TALENTS = ['archivist', 'connector', 'tinkerer'];
 const checkedHub = (career, action) => {
@@ -25,20 +26,13 @@ function earnPaper(career, type = 'replicate') {
   for (const [id, required] of Object.entries(PROJECTS[type].materials)) {
     while ((career.profile.stash[id] || 0) < required) { act(`buy:${id}`); bought += 1; }
   }
-  act(`research:start:${type}`);
-  while (career.profile.research.project.runs < 2
-    || career.profile.research.project.quality < careerView(career).research.project.target) {
-    const needed = 1 + career.profile.research.project.scope;
-    while ((career.profile.stash.compute || 0) < needed) { act('buy:compute'); bought += 1; }
-    act('research:experiment');
-    assert.ok(career.profile.research.project.runs <= 6, 'a viable first paper must not get stuck at its experiment limit');
-  }
-  const runs = career.profile.research.project.runs;
-  act('research:submit');
-  act('research:review');
-  assert.equal(career.profile.research.project.status, 'ready');
-  act('research:publish');
-  return { actions, runs, bought };
+  const progress = finishPaper(career.profile, { start: type,
+    act: id => { actions += 1; return hubAct(career, `research:${id}`); },
+    onExperiment: project => {
+      const needed = 1 + project.scope;
+      while ((career.profile.stash.compute || 0) < needed) { act('buy:compute'); bought += 1; }
+    } });
+  return { actions, runs: progress.runs, bought, returns: progress.returns };
 }
 
 /** A modest new player's outing: four cautious searches, no synthetic rewards. */
@@ -81,7 +75,7 @@ test('512 genuine first-paper paths reach promotion from the starter budget acro
       const prePromotionFunding = career.profile.funding;
       const accepted = structuredClone(career.profile.research.papers);
       assert.equal(accepted.length, 1);
-      assert.ok(prePromotionFunding >= 300, `seed ${seed}/${direction}: first paper should leave room for a second outing`);
+      assert.ok(prePromotionFunding >= 90, `seed ${seed}/${direction}: first paper should retain one basic experiment of funding before the title grant`);
       const promotion = careerView(career).research.actions.find(row => row.id === 'research:promote');
       assert.equal(promotion.disabled, false, promotion.reason);
       checkedHub(career, 'research:promote');
@@ -100,8 +94,8 @@ test('512 genuine first-paper paths reach promotion from the starter budget acro
     }
   }
   assert.equal(backgrounds.size, 12, 'cover every school/personality combination');
-  assert.ok(metrics.maxRuns <= 4);
-  assert.ok(metrics.maxActions <= 16);
+  assert.ok(metrics.maxRuns <= 7, 'seeded setbacks must have a short finite recovery');
+  assert.ok(metrics.maxActions <= 35);
   t.diagnostic(JSON.stringify(metrics));
 });
 
@@ -121,7 +115,7 @@ test('128 starter outings lead to a real first paper even after imperfect extrac
     const funds = persisted.profile.funding;
     checkedHub(persisted, 'research:promote');
     assert.equal(persisted.profile.research.stage, 1);
-    assert.ok(funds >= 300, `seed ${seed}: a short opening expedition must not make promotion unaffordable`);
+    assert.ok(funds >= 90, `seed ${seed}: a short opening expedition must not make promotion unaffordable`);
     metrics.careers += 1;
     metrics[outing.kind] += 1;
     metrics.minFundingBeforePromotion = Math.min(metrics.minFundingBeforePromotion, funds);
@@ -129,38 +123,32 @@ test('128 starter outings lead to a real first paper even after imperfect extrac
   }
   assert.ok(metrics.clean + metrics.messy >= 110, 'new-player short outings should usually bring discoveries home');
   assert.ok(events.size >= 3, 'opening seeds must not all show one story');
-  assert.ok(metrics.maxActions <= 30, 'the short expedition → paper → promotion loop should not require grinding');
+  assert.ok(metrics.maxActions <= 45, 'the short expedition → paper → promotion loop should not require grinding');
   t.diagnostic(JSON.stringify({ ...metrics, distinctOpeningEvents: events.size }));
 });
 
-test('each first-promotion specialization is an earned immutable choice, durable across saves and guarded during raids', () => {
-  for (const talent of TALENTS) {
-    let career = createCareer(7919);
-    const unearned = JSON.stringify(career);
+test('first promotion is a direct earned title with no faction choice, durable and guarded during raids', () => {
+  const career = createCareer(7919);
+  earnPaper(career);
+  checkedHub(career, 'research:promote');
+  assert.equal(career.profile.research.stage, 1);
+  for (const talent of [...TALENTS, '__proto__', 'constructor', 'missing']) {
+    const before = JSON.stringify(career);
     assert.equal(hubAct(career, `research:talent:${talent}`).ok, false);
-    assert.equal(JSON.stringify(career), unearned);
-    earnPaper(career);
-    checkedHub(career, 'research:promote');
-    checkedHub(career, `research:talent:${talent}`);
-    assert.deepEqual(career.profile.research.talent, { id: talent, rank: 1 });
-    const chosen = JSON.stringify(career);
-    for (const other of [...TALENTS, '__proto__', 'constructor', 'missing']) {
-      assert.equal(hubAct(career, `research:talent:${other}`).ok, false);
-      assert.equal(JSON.stringify(career), chosen, 'changing or replaying a specialization cannot grant rewards');
-    }
-    career = migrateCareer(JSON.stringify(career));
-    assert.deepEqual(career.profile.research.talent, { id: talent, rank: 1 });
-    const funding = career.profile.funding;
-    checkedDeployment(career, { seed: 10000, difficulty: 'easy' });
-    const deployed = JSON.stringify(career);
-    assert.equal(hubAct(career, 'research:milestone:ack').ok, false);
-    assert.equal(hubAct(career, `research:talent:${talent}`).ok, false);
-    assert.equal(JSON.stringify(career), deployed, 'hub identity actions cannot change a live expedition');
-    checkedRaid(career.run, 'extract');
-    assert.equal(settle(career), true);
-    assert.equal(career.profile.funding, funding);
-    assert.deepEqual(migrateCareer(JSON.stringify(career)).profile.research.talent, { id: talent, rank: 1 });
+    assert.equal(JSON.stringify(career), before, 'retired choices cannot grant rewards or alter progress');
   }
+  assert.equal(migrateCareer(JSON.stringify(career)).profile.research.talent, null);
+  const funding = career.profile.funding;
+  checkedDeployment(career, { seed: 10000, difficulty: 'easy' });
+  assert.equal(career.run.talent, null);
+  const deployed = JSON.stringify(career);
+  assert.equal(hubAct(career, 'research:milestone:ack').ok, false);
+  assert.equal(hubAct(career, 'research:promote').ok, false);
+  assert.equal(JSON.stringify(career), deployed, 'hub title actions cannot change a live expedition');
+  checkedRaid(career.run, 'extract');
+  assert.equal(settle(career), true);
+  assert.equal(career.profile.funding, funding);
+  assert.equal(migrateCareer(JSON.stringify(career)).profile.research.stage, 1);
 });
 
 test('old promoted saves preserve earned assets without retroactive grants or forged talent ranks', () => {
@@ -183,8 +171,9 @@ test('old promoted saves preserve earned assets without retroactive grants or fo
       assert.deepEqual(again.profile.research, restored.profile.research);
     }
     career.profile.research.talent = { id: 'archivist', rank: 999 };
-    const expected = stage === 0 ? null : { id: 'archivist', rank: stage >= 6 ? 3 : stage >= 3 ? 2 : 1 };
-    assert.deepEqual(migrateCareer(JSON.stringify(career)).profile.research.talent, expected);
+    const converted = migrateCareer(JSON.stringify(career)).profile.research;
+    assert.equal(converted.talent, null);
+    assert.equal(converted.legacySupport.initialQuality, stage === 0 ? 0 : 3 * (stage >= 6 ? 3 : stage >= 3 ? 2 : 1));
   }
 });
 
@@ -352,14 +341,18 @@ test('a zero-network connector retains an affordable normal story path', () => {
   }
 });
 
-test('all three active talents spend one persistent budget, cannot farm repeated actions, and reset only for a new raid', () => {
+test('all three legacy active raids preserve used budgets and consequences, while later raids have no faction ability', () => {
   for (const id of TALENTS) {
     let career = createCareer(7919);
     earnPaper(career);
     checkedHub(career, 'research:promote');
-    checkedHub(career, `research:talent:${id}`);
-    checkedDeployment(career, { seed: 7919, difficulty: 'easy' });
+    // This serialized run models an already-started v5 expedition. New careers
+    // cannot select or deploy with a faction; only its saved consequences persist.
+    career.profile.research.talent = { id, rank: 1 };
+    career.run = createProbabilityRaid({ seed: 7919, difficulty: 'easy', talent: { id, rank: 1 } });
+    career = migrateCareer(JSON.stringify(career));
     assert.deepEqual(career.run.talent, { id, rank: 1 });
+    assert.equal(career.profile.research.talent, null);
     // Isolate an eligible ability state. Promotion and deployment above are real.
     career.run.bag = ['dataset', 'src_code', 'wind'];
     career.run.stats.network = 2;
@@ -399,7 +392,7 @@ test('all three active talents spend one persistent budget, cannot farm repeated
     checkedDeployment(career, { seed: 7920, difficulty: 'easy' });
     assert.equal(career.run.talentState.used, false);
     assert.equal(career.run.talentState.protectedIndex, null);
-    assert.deepEqual(career.run.talent, { id, rank: 1 });
+    assert.equal(career.run.talent, null, 'a new expedition no longer offers the retired ability');
   }
 });
 

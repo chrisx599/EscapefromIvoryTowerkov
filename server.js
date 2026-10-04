@@ -223,8 +223,8 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (route === '/api/meta' && req.method === 'GET') {
-      return sendJson(res, 200, { ok: true, defaultMode: 'probability', rulesVersion: '0.9.0', aiEnabled: false,
-        features: ['probability-expedition', 'encounter-pacing', 'research', 'warehouse-upgrade', 'academic-stories', 'career-talents', 'surprise-encounters'] });
+      return sendJson(res, 200, { ok: true, defaultMode: 'probability', rulesVersion: '0.10.0', aiEnabled: false,
+        features: ['probability-expedition', 'encounter-pacing', 'research', 'warehouse-upgrade', 'academic-stories', 'research-factors', 'surprise-encounters'] });
     }
 
     if ((route === '/api/state' || route === '/api/hub') && req.method === 'GET') {

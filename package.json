@@ -1,12 +1,12 @@
 {
   "name": "escape-from-ivory-towerkov",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "type": "module",
   "description": "《逃离象牙塔夫》 / Escape from Ivory Towerkov —— 科研概率搜打撤与生涯游戏",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test tools/career.test.mjs tools/item-art.test.mjs tools/research.test.mjs tools/probability-raid.test.mjs tools/probability-api.test.mjs tools/expedition-context.test.mjs tools/academic-stories.test.mjs tools/promotion-rewards.test.mjs tools/gameplay-progression.test.mjs tools/encounter-surprises.test.mjs tools/minimal-loop.test.mjs",
+    "test": "node --test tools/career.test.mjs tools/item-art.test.mjs tools/research.test.mjs tools/probability-raid.test.mjs tools/probability-api.test.mjs tools/expedition-context.test.mjs tools/academic-stories.test.mjs tools/promotion-rewards.test.mjs tools/gameplay-progression.test.mjs tools/encounter-surprises.test.mjs tools/minimal-loop.test.mjs tools/research-factors.test.mjs",
     "test:browser": "node tools/probability-browser.mjs",
     "test:probability": "node tools/probability-browser.mjs",
     "test:probability:api": "node --test tools/probability-api.test.mjs",

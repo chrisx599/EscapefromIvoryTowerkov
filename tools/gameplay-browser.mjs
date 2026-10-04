@@ -9,7 +9,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { createCareer, careerView, deployProbability, hubAct } from '../src/career.js';
-import { actProbabilityRaid, probabilityRaidView } from '../src/probability-raid.js';
+import { actProbabilityRaid, createProbabilityRaid, probabilityRaidView } from '../src/probability-raid.js';
+import { finishPaper, nextResearchAction } from './research-qa.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ARTIFACTS = path.join(ROOT, '.artifacts');
@@ -33,16 +34,13 @@ const raidAction = (run, id) => {
 
 function materialFixture() {
   const career = createCareer(123456789);
-  for (const id of ['dataset', 'src_code', 'compute', 'compute', 'compute', 'compute']) action(career, `buy:${id}`);
+  for (const id of ['dataset', 'src_code', ...Array(7).fill('compute')]) action(career, `buy:${id}`);
   return career;
 }
 
 function readyForPromotionFixture() {
   const career = materialFixture();
-  action(career, 'research:start:replicate');
-  while (career.profile.research.project.runs < 2
-    || career.profile.research.project.quality < careerView(career).research.project.target) action(career, 'research:experiment');
-  for (const id of ['submit', 'review', 'publish']) action(career, `research:${id}`);
+  finishPaper(career.profile, { start: 'replicate' });
   return career;
 }
 
@@ -59,31 +57,17 @@ function storyFixture(id) {
   throw new Error(`No natural opening seed for story ${id}`);
 }
 
-function activeTalentFixture(id) {
-  const promoted = readyForPromotionFixture();
-  action(promoted, 'research:promote');
-  action(promoted, `research:talent:${id}`);
-  // This scenario isolates the active ability's explicit network prerequisite.
-  // The rank and paper are genuinely earned; the two test network points are not.
-  if (id === 'connector') promoted.profile.network = 2;
-  for (let seed = 1; seed <= 300; seed += 1) {
-    const career = structuredClone(promoted);
-    assert.equal(deployProbability(career, { seed: seed * 7919, difficulty: 'easy' }).ok, true);
-    for (let step = 0; step < 25 && career.run.status === 'playing'; step += 1) {
-      const view = probabilityRaidView(career.run);
-      if (view.pendingLoot.length) { raidAction(career.run, 'take:available'); continue; }
-      if (id === 'connector' && view.event?.actions.some(row => row.id === 'event:talent-negotiate' && !row.disabled)) return career;
-      if (id !== 'connector' && !view.event && view.bag.length >= 2 && view.talent?.actions.some(row => !row.disabled)) return career;
-      if (view.event) {
-        const choice = view.event.actions.find(row => row.id === 'event:story-decline')
-          || view.event.actions.filter(row => !row.disabled && !row.endsRaid).sort((a, b) => Number(b.probability) - Number(a.probability))[0];
-        if (!choice) break;
-        raidAction(career.run, choice.id);
-      } else if (view.stats.will >= 2) raidAction(career.run, 'search:cautious');
-      else break;
-    }
-  }
-  throw new Error(`No natural ability fixture for ${id}`);
+function legacyTalentFixture(id, used = false) {
+  const career = readyForPromotionFixture();
+  action(career, 'research:promote');
+  career.profile.research.talent = { id, rank: 1 };
+  career.run = createProbabilityRaid({ seed: 7919, raidId: `legacy-${id}-${used}`, difficulty: 'easy', talent: { id, rank: 1 }, network: 2 });
+  career.run.bag = ['dataset', 'src_code', 'wind'];
+  if (id === 'connector') career.run.event = { id: 'legacy-network', type: 'npc', name: '同学', title: '合作边界', text: '商议合作。', choices: [] };
+  if (used) raidAction(career.run, id === 'connector' ? 'event:talent-negotiate' : `talent:${id === 'archivist' ? 'archive' : 'convert'}:0`);
+  career.run.stats.risk = 100;
+  career.run.rngState = 1;
+  return career;
 }
 
 async function freePort() {
@@ -187,40 +171,46 @@ async function captureLayouts(page, selector, prefix) {
   }
 }
 
-async function promotionScenario(page, talent, completePaper) {
+async function promotionScenario(page, label, completePaper) {
   await workspace(page, 'research');
   if (completePaper) {
     await clickAction(page, 'research:start:replicate');
-    for (let attempt = 0; attempt < 12; attempt += 1) {
+    for (let attempt = 0; attempt < 72; attempt += 1) {
       const current = await state(page);
       const project = current.hub.research.project;
       if (!project) break;
-      const next = project.status === 'ready' ? 'publish' : project.status === 'submitted' ? 'review'
-        : project.runs >= 2 && project.quality >= project.target ? 'submit' : 'experiment';
-      await clickAction(page, `research:${next}`);
+      await clickAction(page, `research:${nextResearchAction(current.hub.research)}`);
     }
   }
   const before = await state(page);
   assert.equal(before.hub.research.papers.length, 1, 'promotion starts from a genuinely accepted paper');
-  let promoted = await clickAction(page, 'research:promote');
+  let receipt;
+  const observe = request => {
+    if (new URL(request.url()).pathname === '/api/hub/action' && request.postDataJSON()?.action === 'research:promote') receipt = request.postDataJSON();
+  };
+  page.on('request', observe);
+  let promoted;
+  try { promoted = await clickAction(page, 'research:promote'); }
+  finally { page.off('request', observe); }
   assert.equal(promoted.hub.research.stage, 1);
   assert.equal(promoted.hub.funding, before.hub.funding + 180);
   assert.equal(await page.locator('#promotion-celebration').isVisible(), true);
   assert.match(await page.locator('#promotion-celebration').innerText(), /180/);
-  assert.equal(await page.locator('#career-talent-choice').isVisible(), true);
-  if (completePaper) await captureLayouts(page, '#promotion-celebration', 'ui-v4-promotion');
-  promoted = await reloadUnchanged(page, promoted, `${talent} promotion before choice`);
-  await workspace(page, 'research');
-  const selected = await clickAction(page, `research:talent:${talent}`);
-  assert.equal(selected.hub.research.talent.id, talent);
-  assert.equal(selected.hub.funding, promoted.hub.funding, 'choosing a role does not replay the promotion grant');
-  await reloadUnchanged(page, selected, `${talent} chosen specialization`);
+  assert.equal(await page.locator('#career-talent-choice, [data-hub-action^="research:talent:"]').count(), 0);
+  assert.equal(promoted.hub.research.canChooseTalent, false);
+  assert.deepEqual(promoted.hub.research.talents, []);
+  if (completePaper) await captureLayouts(page, '#promotion-celebration', 'ui-v6-promotion');
+  promoted = await reloadUnchanged(page, promoted, `${label} earned promotion`);
+  assert.ok(receipt?.requestId);
+  const replayed = await (await page.request.post('/api/hub/action', { data: receipt })).json();
+  assert.equal(replayed.replayed, true);
+  assert.deepEqual((await state(page)).hub, promoted.hub, 'replaying a promotion receipt must not grant funds twice');
   await workspace(page, 'research');
   const acknowledged = await clickAction(page, 'research:milestone:ack');
   assert.equal(acknowledged.hub.research.lastMilestone.acknowledged, true);
   assert.equal(acknowledged.hub.funding, promoted.hub.funding);
-  await reloadUnchanged(page, acknowledged, `${talent} acknowledged promotion`);
-  await fits(page, `${talent}-chosen`);
+  await reloadUnchanged(page, acknowledged, `${label} acknowledged promotion`);
+  await fits(page, `${label}-promoted`);
 }
 
 async function storyScenario(page, storyId, screenshots) {
@@ -266,73 +256,42 @@ async function storyScenario(page, storyId, screenshots) {
   await fits(page, `${storyId}-settled`);
 }
 
-async function activeTalentScenario(page, id) {
+async function legacyTalentScenario(page, id, used) {
   await page.setViewportSize({ width: 390, height: 844 });
-  const before = await state(page);
-  assert.equal(before.view.talent.id, id);
-  assert.equal(before.view.talent.used, false);
-  assert.equal(await page.locator('#field-talent').count(), 0, 'talent prose must not recreate a status panel');
-  let command;
-  let selectedIndex;
-  if (id === 'connector') {
-    command = 'event:talent-negotiate';
-    if (before.view.event.encounterVersion === 2) assert.match(await page.locator(`[data-action="${command}"]`).innerText(), /人脉\s*1/,
-      'the special earned ability must reveal its real resource fee before the user chooses it');
+  let before = await state(page);
+  assert.equal(before.view.talent.id, id, 'an existing raid preserves its legacy serialized rule state');
+  assert.equal(before.view.talent.used, used);
+  assert.equal(before.hub.research.talent, null, 'the career has already converted to neutral research support');
+  assert.equal(await page.locator('#field-talent, [data-action^="talent:"], [data-action="event:talent-negotiate"]').count(), 0,
+    'no retired active ability is offered, including on old live raids');
+  assert.equal(await page.locator('#raid-bag').isVisible(), true);
+  const cell = page.locator('button.item-cell[data-item-zone="bag"]').first();
+  await cell.click();
+  assert.equal(await page.locator('[data-action^="talent:"]').count(), 0, 'opening a bag detail cannot reveal retired abilities');
+  before = await reloadUnchanged(page, before, `${id}/${used} old active save`);
+  await fits(page, `${id}/${used}-legacy-raid`);
+  let result = await clickAction(page, before.view.event ? 'event:leave' : 'extract', false);
+  assert.equal(result.phase, 'result');
+  if (id === 'archivist' && used) {
+    assert.ok(result.view.result.archivedIds.includes('dataset'), 'protection already earned before migration survives failed extraction');
   }
-  else {
-    const available = before.view.talent.actions.find(row => !row.disabled);
-    assert.ok(available);
-    command = available.id;
-    selectedIndex = Number(command.split(':').at(-1));
-    assert.equal(await page.locator('#raid-bag-details').evaluate(element => element.tagName), 'SECTION');
-    assert.equal(await page.locator('#raid-bag').isVisible(), true, 'active abilities act on the always-visible real bag');
-    const cell = page.locator('button.item-cell[data-item-zone="bag"]').nth(selectedIndex);
-    await cell.click();
-    assert.equal(await cell.getAttribute('aria-pressed'), 'true');
-    assert.equal(await page.locator(`#bag-item-detail [data-action="${command}"]`).isEnabled(), true);
-  }
-  let receipt;
-  const capture = request => {
-    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/expedition/action') {
-      const body = request.postDataJSON();
-      if (body?.action === command) receipt = body;
-    }
-  };
-  page.on('request', capture);
-  let after;
-  try { after = await clickAction(page, command, false); }
-  finally { page.off('request', capture); }
-  assert.ok(receipt?.requestId, 'the clicked ability must use the regular durable mutation receipt');
-  assert.equal(after.view.talent.used, true, 'the real one-use talent budget is spent');
-  assert.equal(after.hub.funding, before.hub.funding, 'using a talent cannot replay the promotion grant');
-  const idsBefore = before.view.bag.map(row => row.id);
-  const idsAfter = after.view.bag.map(row => row.id);
-  if (id === 'archivist') {
-    assert.deepEqual(idsAfter, idsBefore);
-    assert.equal(after.view.bag[selectedIndex].protection, 'talent');
-    assert.equal(after.view.bag.filter(row => row.protection === 'talent').length, 1);
-  } else if (id === 'tinkerer') {
-    const expected = [...idsBefore];
-    expected.splice(selectedIndex, 1);
-    expected.push('compute');
-    assert.deepEqual(idsAfter, expected, 'UI conversion consumes exactly the selected input for one compute card');
-  } else {
-    assert.equal(after.view.stats.network, before.view.stats.network - 1,
-      'the explicit one-use connector ability spends exactly its displayed one-network fee');
-    assert.equal(after.view.event, null);
-  }
-  after = await reloadUnchanged(page, after, `${id} used active ability`);
-  assert.equal(after.view.talent.used, true, 'the real one-use talent budget is spent');
-  assert.equal(await page.locator('#field-talent [data-open-talent-bag]').count(), 0);
-  assert.ok(after.view.talent.actions.every(row => row.disabled), 'remaining material actions must obey the spent once-per-raid budget');
-  const replayResponse = await page.request.post('/api/expedition/action', { data: receipt });
-  const replayed = await replayResponse.json();
-  assert.equal(replayed.ok, true);
-  assert.equal(replayed.replayed, true);
-  const afterReplay = await state(page);
-  assert.deepEqual(afterReplay.view, after.view, 'retrying the exact UI request cannot use the ability twice');
-  assert.deepEqual(afterReplay.hub, after.hub, 'retrying the exact UI request cannot grant research money or another reward');
-  await fits(page, `${id}-active-ability`);
+  result = await reloadUnchanged(page, result, `${id}/${used} legacy settlement`);
+  const response = page.waitForResponse(response => new URL(response.url()).pathname === '/api/hub/return' && response.request().method() === 'POST');
+  await page.locator('#result-return').click();
+  assert.equal((await (await response).json()).ok, true);
+  await page.locator('#hub-screen').waitFor({ state: 'visible' });
+  await workspace(page, 'research');
+  assert.equal(await page.locator('#career-talent-choice, [data-hub-action^="research:talent:"]').count(), 0);
+  const migrated = await state(page);
+  assert.equal(migrated.hub.research.stage, 1);
+  assert.equal(migrated.hub.research.papers.length, 1);
+  await reloadUnchanged(page, migrated, `${id}/${used} converted neutral support`);
+  await workspace(page, 'prepare');
+  const deployed = page.waitForResponse(response => new URL(response.url()).pathname === '/api/new' && response.request().method() === 'POST');
+  await page.locator('#hub-start-raid').click();
+  const next = await (await deployed).json();
+  assert.equal(next.ok, true);
+  assert.equal(next.view.talent, null, 'the next expedition has no faction ability');
 }
 
 try {
@@ -343,13 +302,13 @@ try {
     path.join(ROOT, '.browser-cache/chromium_headless_shell-1161/chrome-linux/headless_shell'),
     '/usr/bin/chromium', '/usr/bin/google-chrome'].filter(Boolean).find(existsSync);
   browser = await chromium.launch({ ...(chromePath ? { executablePath: chromePath } : {}), headless: true });
-  await scenario(materialFixture(), page => promotionScenario(page, 'archivist', true));
-  for (const talent of ['connector', 'tinkerer']) await scenario(readyForPromotionFixture(), page => promotionScenario(page, talent, false));
+  await scenario(materialFixture(), page => promotionScenario(page, 'first title', true));
+  await scenario(readyForPromotionFixture(), page => promotionScenario(page, 'reloaded paper', false));
   for (const storyId of ['reviewer_printer', 'stamp_maze', 'faculty_cat']) {
     await scenario(storyFixture(storyId), page => storyScenario(page, storyId, storyId === 'reviewer_printer'));
   }
   for (const talent of ['archivist', 'connector', 'tinkerer']) {
-    await scenario(activeTalentFixture(talent), page => activeTalentScenario(page, talent));
+    for (const used of [false, true]) await scenario(legacyTalentFixture(talent, used), page => legacyTalentScenario(page, talent, used));
   }
   assert.deepEqual(errors, [], 'no browser JavaScript errors');
   assert.deepEqual(externalRequests, [], 'all app resources stay on the isolated localhost server');

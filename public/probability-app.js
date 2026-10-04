@@ -476,14 +476,13 @@ function renderResearch() {
   const starter = (research.templates || []).find(row => row.id === 'replicate') || research.templates?.[0];
   const inventory = new Map(stashItems().map(item => [item.id, item]));
   const experiment = (research.actions || []).find(action => action.id === 'research:experiment');
-  const targetNeeds = { ...(starter?.materials || {}), compute: Math.max(2, Number(starter?.materials?.compute) || 0) };
+  const targetNeeds = { ...(starter?.materials || {}), compute: Math.max(2 * (1 + Number(starter?.scope || 0)), Number(starter?.materials?.compute) || 0) };
   const targetMissing = Object.entries(targetNeeds).map(([id, count]) => {
     const item = inventory.get(id);
     const missing = Math.max(0, count - Math.max(0, Number(item?.count || 0) - Number(item?.packedCount || 0)));
     return missing ? (MATERIAL_LABELS[id] || item?.name || id) + ' ×' + missing : '';
   }).filter(Boolean);
-  $('#setup-gap').textContent = research.canChooseTalent ? '新的专长等你选择，前往研究工位领取自己的拿手本事'
-    : (research.actions || []).some(row => row.id === 'research:promote' && !row.disabled) ? '晋升条件已齐，前往研究工位领取晋升奖励'
+  $('#setup-gap').textContent = (research.actions || []).some(row => row.id === 'research:promote' && !row.disabled) ? '晋升条件已齐，前往研究工位领取晋升奖励'
     : project?.status === 'submitted' ? '论文已投稿，可以返回研究工位查看审稿'
     : project?.status === 'ready' ? '审稿通过，可以返回研究工位确认录用'
     : project ? (experiment?.disabled && experiment.reason ? '实验准备：' + experiment.reason : '材料就绪，可以继续实验')
@@ -596,11 +595,10 @@ function renderGenericActions(target, actions) {
 function compactChoice(action) {
   if (action.label) return action.label;
   if (action.id === 'event:story-decline') return '去旁边看看';
-  if (action.id === 'event:talent-negotiate') return '聊两句';
   return String(action.name || '试试看').replace(/^(?:花心力|消耗人脉)[，,：:]?/, '').replace(/[，,；;].*$/, '').slice(0, 14);
 }
 function renderEventChoices(actions) {
-  $('#event-choices').innerHTML = (actions || []).filter(action => !exitAction(action) && !action.disabled).map(action => '<div class="decision-option"><button type="button" class="neutral-choice" data-action="' + attr(action.id) + '" data-server-disabled="false" ' + (pending || uncertainMutation ? 'disabled' : '') + '>' + esc(compactChoice(action)) + '</button></div>').join('');
+  $('#event-choices').innerHTML = (actions || []).filter(action => !exitAction(action) && !action.disabled && !action.talent && action.id !== 'event:talent-negotiate').map(action => '<div class="decision-option"><button type="button" class="neutral-choice" data-action="' + attr(action.id) + '" data-server-disabled="false" ' + (pending || uncertainMutation ? 'disabled' : '') + '>' + esc(compactChoice(action)) + '</button></div>').join('');
 }
 function shortResult(action) {
   if (action.brief) return action.brief;
@@ -631,12 +629,12 @@ function renderRaid(current) {
   renderFieldScene(current, { scene: $('#field-scene'), status: $('#raid-statusline') });
   $('#bag-capacity').textContent = number(current.bagUsed) + ' / ' + number(current.bagCap);
   const actions = current.actions || [];
-  const bagActions = actions.filter(action => /^(drop|use|backup|talent):/.test(action.id));
+  const bagActions = actions.filter(action => /^(drop|use|backup):/.test(action.id));
   const bagEntries = (current.bag || []).map((item,index) => {
     const applicable = bagActions.filter(action => action.id.endsWith(':'+index));
     const controls = applicable.map(action => {
       const verb = action.id.split(':')[0];
-      const name = verb === 'drop' ? '放下' : verb === 'use' ? '使用' : verb === 'backup' ? '备份' : action.id.startsWith('talent:archive:') ? '封存' : '改装';
+      const name = verb === 'drop' ? '放下' : verb === 'use' ? '使用' : '备份';
       return actionButton(action.id,name,action.disabled,action.disabled?action.reason:'','');
     }).join('');
     return { key: current.raidId+':'+current.revision+':'+index+':'+item.id, item,index,count:1,
@@ -853,9 +851,9 @@ async function submitApi(path, body, label) {
     toggleBusy(false);
     render();
     if (raidActionSucceeded && view?.status === 'playing') focusRaidStep(previousRaid, body.action);
-    if (!view && path === '/api/hub/action' && /^research:(promote|talent:|milestone:)/.test(body.action || '')) {
+    if (!view && path === '/api/hub/action' && /^research:(promote|milestone:)/.test(body.action || '')) {
       const target = body.action === 'research:promote' ? $('#promotion-title')
-        : body.action.startsWith('research:talent:') ? $('.talent-owned summary') : $('#research-current-goal');
+        : $('#research-current-goal');
       if (target) { target.tabIndex = -1; target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() }); }
     }
     if (equippedItemId && equipmentPickerSlot === previousPickerSlot) {
