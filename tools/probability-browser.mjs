@@ -575,8 +575,8 @@ async function runUncertainMutationScenario(browser, base, pageErrors, externalR
     await purchase.click();
     await page.waitForFunction(() => {
       const action = document.querySelector('#shop-item-detail [data-hub-action="buy:wind"]');
-      const feedback = document.querySelector('#global-feedback')?.innerText || '';
-      return action?.disabled && feedback.includes('同步存档');
+      const feedback = document.querySelector('#hub-feedback')?.innerText || '';
+      return action?.disabled && feedback.includes('同步进度');
     }, null, { timeout: 10_000 });
     assert.equal(attemptedBodies.length, 3, 'two submits plus the automatic reconciliation retry should be aborted');
     const originalRequestId = attemptedBodies[0]?.requestId;
@@ -596,8 +596,8 @@ async function runUncertainMutationScenario(browser, base, pageErrors, externalR
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 });
     await page.locator('#hub-screen').waitFor({ state: 'visible', timeout: 10_000 });
     await page.waitForFunction(() => {
-      const feedback = document.querySelector('#global-feedback')?.innerText || '';
-      return feedback.includes('同步存档') && !document.body.classList.contains('is-pending');
+      const feedback = document.querySelector('#hub-feedback')?.innerText || '';
+      return feedback.includes('同步进度') && !document.body.classList.contains('is-pending');
     }, null, { timeout: 10_000 });
     assert.ok(attemptedBodies.length >= 4, 'reloading should retry the persisted uncertain mutation with the same request');
     assert.ok(attemptedBodies.every(body => body?.requestId === originalRequestId && body.action === 'buy:wind'),
@@ -702,6 +702,18 @@ async function runFullBagEventUiScenario(browser, base, saveDir, pageErrors, ext
     await page.locator('#raid-screen').waitFor({ state: 'visible', timeout: 10_000 });
     let state = await readState(page);
     assert.equal(state.phase, 'raid');
+    for (const width of [320, 390, 768, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      const cells = await page.locator('.probabilities .prob').evaluateAll(nodes => nodes.map(el => {
+        const r = el.getBoundingClientRect();
+        return { width:r.width, left:r.left, right:r.right, fits:el.scrollWidth <= el.clientWidth + 1 };
+      }));
+      assert.equal(cells.length, 5);
+      assert.ok(cells.every(cell => cell.width >= 60 && cell.left >= 0 && cell.right <= width && cell.fits),
+        `risk and extraction panels must remain readable at ${width}px: ${JSON.stringify(cells)}`);
+      assert.equal(await page.locator('.risk-meter').getAttribute('aria-valuenow'), String(state.view.stats.risk));
+    }
+    await page.setViewportSize({ width:390, height:844 });
     assert.equal(state.view.bagUsed, state.view.bagCap, 'the isolated UI fixture should fill the bag exactly');
     assert.equal(state.view.pendingLoot.length, 1);
     assert.ok(state.view.event, 'a full bag must coexist with its unresolved event');
@@ -1095,13 +1107,17 @@ try {
   LOCAL_ORIGINS.add(game.base);
 
   const chromePath = [
+    process.env.CHROME_PATH,
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     'C:/Program Files/Google/Chrome/Application/chrome.exe',
     'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
     'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
     'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-  ].find(existsSync);
-  assert.ok(chromePath, 'local Chrome or Edge is required for the isolated browser run');
-  browser = await chromium.launch({ executablePath: chromePath, headless: true });
+  ].filter(Boolean).find(existsSync);
+  browser = await chromium.launch({ ...(chromePath ? { executablePath: chromePath } : {}), headless: true });
   context = await browser.newContext({ baseURL: game.base, viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
   activePage = await context.newPage();
   activePage.on('pageerror', error => pageErrors.push(error.message));
@@ -1201,10 +1217,14 @@ try {
   await activateWorkspace(activePage, 'prepare');
   assert.equal(await activePage.locator('#setup-difficulty-options [data-difficulty-choice="hard"]').getAttribute('aria-pressed'), 'true',
     'difficulty selection should survive workspace rerenders');
+  await activePage.evaluate(() => window.scrollTo(0, 0));
+  await activePage.screenshot({ path: path.join(ARTIFACTS, 'ui-after-desktop-viewport.png') });
   await activePage.screenshot({ path: DIFFICULTY_DESKTOP_SHOT, fullPage: true });
   await activePage.setViewportSize({ width: 390, height: 844 });
   assert.equal(await activePage.evaluate(() => document.documentElement.scrollWidth > innerWidth), false,
     'the new difficulty cards and natural material pool should not overflow on mobile');
+  await activePage.evaluate(() => window.scrollTo(0, 0));
+  await activePage.screenshot({ path: path.join(ARTIFACTS, 'ui-after-mobile-viewport.png') });
   await activePage.screenshot({ path: DIFFICULTY_MOBILE_SHOT, fullPage: true });
   await activePage.setViewportSize({ width: 1440, height: 900 });
   await selectDifficulty(activePage, 'normal');
@@ -1220,6 +1240,48 @@ try {
   await activateWorkspace(activePage, 'prepare');
   await verifyPngAssets(activePage);
 
+  // Invalid legacy data must leave a visible recovery path outside hidden screens.
+  await activePage.route('**/api/state', async route => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    await route.fulfill({ response, json: { ...payload, view: { mode: 'legacy', status: 'playing' } } });
+  }, { times: 1 });
+  await activePage.reload();
+  await activePage.locator('#global-feedback').waitFor({ state: 'visible' });
+  assert.match(await activePage.locator('#global-feedback').innerText(), /无法读取.*同步进度/);
+  await activePage.locator('#hub-refresh-state').click();
+  await activePage.locator('#hub-screen').waitFor({ state: 'visible' });
+
+  // UI regression: keyboard dismissal and all narrow/intermediate workspaces.
+  await activePage.emulateMedia({ reducedMotion: 'reduce' });
+  const bagSlot = activePage.locator('[data-item-zone="loadout"][data-item-key="bag"]');
+  await bagSlot.focus();
+  await bagSlot.press('Enter');
+  assert.equal(await activePage.locator('#equipment-picker').evaluate(el => el === document.activeElement), true,
+    'opening equipment by keyboard should move focus into the picker');
+  await activePage.locator('#equipment-picker').press('Escape');
+  assert.equal(await activePage.locator('#equipment-picker').isVisible(), false);
+  assert.equal(await bagSlot.evaluate(el => el === document.activeElement), true, 'closing picker restores slot focus');
+  for (const width of [320, 360, 701, 768, 900]) {
+    await activePage.setViewportSize({ width, height: 900 });
+    for (const workspace of ['prepare', 'research', 'inventory', 'shop', 'records']) {
+      await activateWorkspace(activePage, workspace);
+      assert.equal(await activePage.locator('#hub-start-raid').isVisible(), workspace === 'prepare',
+        'the fixed departure bar must only appear on the prepare workspace');
+      assert.equal(await activePage.locator('.stat-4').isVisible(), true, 'career totals remain visible on small screens');
+      assert.equal(await activePage.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false,
+        `${workspace} should fit the ${width}px viewport`);
+    }
+    await activateWorkspace(activePage, 'prepare');
+    await bagSlot.click();
+    assert.equal(await activePage.locator('.picker-browser').evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' ').length), 1,
+      'equipment picker should never nest two cramped columns');
+    assert.equal(await activePage.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false,
+      `open equipment picker should fit the ${width}px viewport`);
+    await activePage.locator('#equipment-picker-close').click();
+  }
+  await activePage.setViewportSize({ width: 1440, height: 900 });
+  await activePage.evaluate(() => window.scrollTo(0, 0));
   await activePage.screenshot({ path: DESKTOP_SHOT, fullPage: true });
   await activePage.setViewportSize({ width: 390, height: 844 });
   assert.equal(await activePage.evaluate(() => document.documentElement.scrollWidth > innerWidth), false,

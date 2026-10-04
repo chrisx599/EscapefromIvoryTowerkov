@@ -7,6 +7,7 @@ const attr = value => esc(value).replace(/'/g, '&#39;');
 const pct = value => Number.isFinite(Number(value)) ? Number(value).toFixed(1) + '%' : '—';
 const friendlyPct = value => Number.isFinite(Number(value)) ? Number(value).toFixed(1).replace(/\.0$/, '') + '%' : '—';
 const number = value => Number.isFinite(Number(value)) ? Number(value).toLocaleString('zh-CN') : '—';
+const scrollBehavior = () => matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
 const SLOT_LABELS = { bag: '背包', focus: '专注设备', tool: '研究工具', device: '计算设备', storage: '存储设备' };
 const VENUE_SCENE_ART = {
   conference: ['/assets/generated/poster-board.png', '学术交流展示板'],
@@ -57,7 +58,8 @@ function openEquipmentPicker(slot) {
   if (changed) { selectedItems.delete('equipment-owned'); selectedItems.delete('equipment-shop'); }
   $('#equipment-picker-feedback')?.classList.add('hidden');
   renderEquipmentPicker();
-  $('#equipment-picker')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  $('#equipment-picker')?.focus({ preventScroll: true });
+  $('#equipment-picker')?.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
 }
 function closeEquipmentPicker() {
   const slot = equipmentPickerSlot;
@@ -200,7 +202,7 @@ function selectItemCell(button) {
   renderItemDetail(zone);
   if (zone === 'loadout') { openEquipmentPicker(button.dataset.itemKey); return; }
   const detail = $(context.detailSelector);
-  if (detail && innerWidth <= 760) detail.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  if (detail && innerWidth <= 760) detail.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
 }
 try {
   const saved = sessionStorage.getItem('xuefa-workspace');
@@ -305,11 +307,13 @@ function rememberRequest(request) {
   } catch { /* The same request can still be retried during this page session. */ }
 }
 function notice(text, kind) {
-  for (const selector of ['#global-feedback', '#raid-feedback']) {
+  const active = view && isProbabilityRaidView(view) && view.status !== 'ended' ? '#raid-feedback' : hub && !view ? '#hub-feedback' : '#global-feedback';
+  for (const selector of ['#global-feedback', '#hub-feedback', '#raid-feedback']) {
     const box = $(selector);
     if (!box) continue;
-    box.textContent = text || '';
-    box.className = 'message' + (text ? '' : ' hidden') + (kind ? ' ' + kind : '');
+    const visibleText = selector === active ? text : '';
+    box.textContent = visibleText || '';
+    box.className = 'message' + (visibleText ? '' : ' hidden') + (kind ? ' ' + kind : '');
   }
 }
 function toggleBusy(value, message) {
@@ -370,13 +374,13 @@ function renderStats() {
   const school = typeof identity.school === 'object' ? identity.school.name : identity.school;
   const research = hub?.research || {};
   const stats = [
-    ['研究者', [identity.name, school, identity.major].filter(Boolean).join(' · ') || '新研究者'],
+    ['研究者', identity.name || '新研究者', [school, identity.major].filter(Boolean).join(' · ')],
     ['科研经费', number(hub.funding) + ' 点'],
     ['仓库容量', number(hub.stashUsed) + ' / ' + number(hub.stashCap) + ' 格'],
     ['研究阶段', research.stageName || '本科'],
     ['远征', number(hub.raids) + ' 次 · 成功撤离 ' + number(hub.extracted) + ' 次'],
   ];
-  $('#hub-stats').innerHTML = stats.map(row => '<div class="stat"><label>' + esc(row[0]) + '</label><strong>' + esc(row[1]) + '</strong></div>').join('');
+  $('#hub-stats').innerHTML = stats.map((row, index) => '<div class="stat stat-' + index + '"><label>' + esc(row[0]) + '</label><strong>' + esc(row[1]) + '</strong>' + (row[2] ? '<small>' + esc(row[2]) + '</small>' : '') + '</div>').join('');
 }
 function researchPreparationText() {
   const available = new Map(stashItems().map(item => [item.id, Math.max(0, Number(item.count || 0) - Number(item.packedCount || 0))]));
@@ -428,6 +432,9 @@ function renderSetup() {
     $('#setup-venue-scene-name').textContent = selectedVenueName(venues, setupSelection.venue);
   }
   const selected = venues.find(item => item.id === setupSelection.venue);
+  const difficulty = difficulties.find(item => item.id === setupSelection.difficulty);
+  $('#setup-venue-caption').textContent = selected?.desc || '寻找下一份研究材料';
+  $('#launch-summary').textContent = (selected?.name || '未选择地点') + ' · ' + (difficulty?.name || '未选择难度') + ' · 出行费 ' + number(selected?.cost || 0);
   const blocked = !selected || selected.disabled || !difficulties.some(item => item.id === setupSelection.difficulty && !item.disabled);
   const poor = selected && Number(hub.funding) < Number(selected.cost || 0);
   $('#hub-start-raid').disabled = pending || uncertainMutation || blocked || poor;
@@ -581,7 +588,7 @@ function renderInventory() {
   renderItemZone('shop', '#hub-shop', '#shop-item-detail', (hub.shop || []).map(item => {
     const stageLocked = Number(item.minStage || 0) > Number(hub.research?.stage || 0);
     const tooExpensive = Number(hub.funding || 0) < Number(item.price || 0);
-    const reason = stageLocked ? '当前身份尚未解锁，需要研究阶段 ' + (Number(item.minStage) + 1) : tooExpensive ? '经费不足，需要 ' + number(item.price) : '';
+    const reason = stageLocked ? equipmentStageReason(item) : tooExpensive ? '经费不足，需要 ' + number(item.price) : '';
     return { key: item.id, item, count: item.count || 0, price: item.price,
       state: stageLocked ? '未解锁' : tooExpensive ? '经费不足' : '', reason,
       actions: hubButton('buy:' + item.id, '购买一件 · ' + number(item.price) + ' 经费', stageLocked || tooExpensive, reason) };
@@ -594,7 +601,7 @@ function renderInventory() {
     return { key: row.id, item, count: row.count, state: '待入库',
       actions: hubButton('store:' + row.id, '存入仓库', Number(hub.stashUsed) >= Number(hub.stashCap), '仓库已满') + hubButton('sell-overflow:' + row.id, '出售 +' + number(item.sellPrice ?? item.value ?? 0)) };
   }));
-  $('#hub-venues').innerHTML = asOptions(hub.probabilitySetup?.venues).map(venue => '<article class="item-card"><div class="item-copy"><div class="item-title">' + esc(venue.name) + '</div><div class="meta">' + esc(venue.desc || '') + ' · ' + number(venue.cost) + ' 经费</div><div class="meta">' + esc(venue.reason || '已解锁，可在远征准备中选择') + '</div></div></article>').join('') || '<div class="empty">服务端暂无地点配置。</div>';
+  $('#hub-venues').innerHTML = asOptions(hub.probabilitySetup?.venues).map(venue => '<article class="item-card venue-entry' + (venue.disabled ? ' is-locked' : '') + '"><span class="venue-index" aria-hidden="true">' + (venue.disabled ? '◇' : '◎') + '</span><div class="item-copy"><div class="item-title">' + esc(venue.name) + '</div><div class="meta">' + esc(venue.desc || '') + ' · ' + number(venue.cost) + ' 经费</div><div class="meta">' + esc(venue.reason || '已解锁，可在远征准备中选择') + '</div></div></article>').join('') || '<div class="empty">服务端暂无地点配置。</div>';
   const report = hub.lastReport;
   $('#hub-last-report').textContent = report
     ? (({ clean: '完整撤离', partial: '部分撤离', fail: '行动失败', scatter: '散场失败' })[report.kind] || '远征结算')
@@ -729,7 +736,9 @@ function renderRaid(current) {
   $('#raid-statusline').innerHTML = '<strong>' + esc(current.player?.name || '研究者') + '</strong><span>' + esc(difficulty.description || '')
     + '</span><span>心力 ' + number(stats.will) + '/' + number(stats.willMax) + '</span><span>人脉 ' + number(stats.network)
     + '</span><span>风险 ' + number(stats.risk) + '</span>';
-  $('#risk-meter-fill').style.width = Math.max(0, Math.min(100, Number(stats.risk) || 0)) + '%';
+  const risk = Math.max(0, Math.min(100, Number(stats.risk) || 0));
+  $('#risk-meter-fill').style.width = risk + '%';
+  $('.risk-meter').setAttribute('aria-valuenow', String(risk));
   $('#prob-acquisition').textContent = pct(probabilities.acquisition);
   $('#raid-material-probabilities').innerHTML = materialProbabilityHtml(probabilities.materials);
   $('#raid-material-probabilities').closest('details').hidden = !probabilities.materials?.length;
@@ -868,7 +877,7 @@ async function readState() {
     phase = payload.phase || (view ? 'raid' : 'hub');
     succeeded = !uncertainMutation && (!view || isProbabilityRaidView(view));
     render();
-    notice(uncertainMutation ? '已读取存档，但上次操作尚未收到回执。请点击“同步存档”重试同一笔操作。'
+    notice(uncertainMutation ? '已读取存档，但上次操作尚未收到回执。请点击“同步进度”重试同一笔操作。'
       : view && !isProbabilityRaidView(view) ? '当前远征状态无法读取，请点击同步进度重试。' : hub?.migrationNotice?.text || '', uncertainMutation ? 'error' : '');
   } catch (error) { notice(error.message, 'error'); }
   finally { toggleBusy(false); render(); }
@@ -878,7 +887,7 @@ async function readState() {
 async function submitApi(path, body, label) {
   if (pending) return;
   if (uncertainMutation) {
-    notice('操作结果尚未确认。请先点击“同步存档”读取服务器状态，再继续操作。', 'error');
+    notice('操作结果尚未确认。请先点击“同步进度”读取服务器状态，再继续操作。', 'error');
     return;
   }
   const focusOrigin = document.activeElement;
@@ -908,7 +917,7 @@ async function submitApi(path, body, label) {
       if (synced) notice('已重试同一笔操作并确认服务器结果，请核对当前状态。');
       else {
         uncertainMutation = true;
-        notice('操作结果尚未确认。请点击“同步存档”读取服务器状态后再继续。', 'error');
+        notice('操作结果尚未确认。请点击“同步进度”读取服务器状态后再继续。', 'error');
       }
       return;
     }
@@ -988,7 +997,7 @@ function focusRaidStep(previous, action) {
   if (!card || card.classList.contains('hidden')) return;
   const focus = card.querySelector('button:not(:disabled)') || card.querySelector('h2');
   if (focus) { if (focus.tagName !== 'BUTTON') focus.tabIndex = -1; focus.focus({ preventScroll: true }); }
-  card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  card.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
 }
 
 $('#hub-start-raid').addEventListener('click', () => {
