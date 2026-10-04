@@ -93,3 +93,5 @@
 .research-workbench .rw-auto-material{color:#456642}
 @media(max-width:600px){.research-workbench .rw-attributes{gap:6px;margin-bottom:13px}.research-workbench .rw-attributes>div{padding:8px}.research-workbench .rw-attributes dt{font-size:11px;gap:3px}.research-workbench .rw-attributes dt b{font-size:12px}.research-workbench .rw-attributes dd{font-size:10px}}
 @media(max-width:360px){.research-workbench .rw-attributes dt{display:block}.research-workbench .rw-attributes dt b{margin-left:5px}.research-workbench .rw-attributes>div{padding:8px 6px}.research-workbench .rw-attributes dd{font-size:9px}}
+
+.research-workbench .rw-paper-total{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:48px;border-bottom:1px solid #e0e6d7;color:#47613e;font-size:12px}.research-workbench .rw-paper-total strong{font-size:16px;font-weight:650;color:#365e3e}.research-workbench .rw-paper-total small{font-size:11px;font-weight:400;color:#7b8870}@media(max-width:600px){.research-workbench .rw-paper-total{min-height:46px;font-size:11px}}
