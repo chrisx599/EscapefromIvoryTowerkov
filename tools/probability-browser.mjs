@@ -8,7 +8,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
-import { careerView, createCareer } from '../src/career.js';
+import { careerView, createCareer, hubAct } from '../src/career.js';
 import { createProbabilityRaid } from '../src/probability-raid.js';
 import { ITEMS } from '../src/content.js';
 
@@ -22,8 +22,99 @@ const WAREHOUSE_DESKTOP_SHOT = path.join(ARTIFACTS, 'probability-warehouse-deskt
 const WAREHOUSE_MOBILE_SHOT = path.join(ARTIFACTS, 'probability-warehouse-mobile.png');
 const EVENT_DESKTOP_SHOT = path.join(ARTIFACTS, 'probability-event-desktop.png');
 const EVENT_MOBILE_SHOT = path.join(ARTIFACTS, 'probability-event-mobile.png');
+const RESEARCH_DESKTOP_SHOT = path.join(ARTIFACTS, 'ui-v3-research-desktop.png');
+const RESEARCH_MOBILE_SHOT = path.join(ARTIFACTS, 'ui-v3-research-mobile.png');
+const FIELD_DESKTOP_SHOT = path.join(ARTIFACTS, 'ui-v3-expedition-desktop.png');
+const FIELD_MOBILE_SHOT = path.join(ARTIFACTS, 'ui-v3-expedition-mobile.png');
+const FIELD_EVENT_DESKTOP_SHOT = path.join(ARTIFACTS, 'ui-v3-expedition-event-desktop.png');
+const FIELD_EVENT_MOBILE_SHOT = path.join(ARTIFACTS, 'ui-v3-expedition-event-mobile.png');
 const LOCAL_ORIGINS = new Set();
 let eventShotsCaptured = false;
+const firstScreenMetrics = [];
+const journeyMetrics = [];
+
+function watchScenarioPage(page, pageErrors, externalRequests, responses) {
+  page.on('pageerror', error => pageErrors.push(error.message));
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (['http:', 'https:'].includes(url.protocol) && !LOCAL_ORIGINS.has(url.origin)) externalRequests.push(url.href);
+  });
+  page.on('response', response => {
+    if (new URL(response.url()).pathname.toLowerCase().endsWith('.png')) responses.push({ url: response.url(), status: response.status() });
+  });
+}
+
+async function assertFitsViewport(page, label) {
+  const overflow = await page.evaluate(() => ({ width: innerWidth, document: document.documentElement.scrollWidth }));
+  assert.ok(overflow.document <= overflow.width + 1, `${label} must fit horizontally: ${JSON.stringify(overflow)}`);
+}
+
+async function assertReloadPreservesState(page, before, label) {
+  const actions = [];
+  const observe = request => {
+    if (request.method() === 'POST') actions.push(new URL(request.url()).pathname);
+  };
+  page.on('request', observe);
+  try {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 });
+    await page.locator(before.phase === 'raid' ? '#raid-screen' : '#hub-screen').waitFor({ state: 'visible', timeout: 10_000 });
+    const after = await readState(page);
+    assert.equal(after.phase, before.phase, `${label}: reload must preserve the active phase`);
+    if (before.phase === 'raid') {
+      for (const key of ['raidId', 'revision', 'stats', 'bag', 'pendingLoot', 'event', 'lastAction', 'expedition']) {
+        assert.deepEqual(after.view[key], before.view[key], `${label}: reload must not mutate ${key}`);
+      }
+    } else {
+      assert.deepEqual(after.hub.research, before.hub.research, `${label}: reload must preserve research progress and its next action`);
+      assert.equal(after.hub.funding, before.hub.funding, `${label}: reload must not charge funds`);
+      assert.deepEqual(after.hub.items, before.hub.items, `${label}: reload must not spend material`);
+    }
+    assert.deepEqual(actions, [], `${label}: viewing a recovered save must not submit a game action`);
+    return after;
+  } finally {
+    page.off('request', observe);
+  }
+}
+
+function createResearchJourneyFixtures() {
+  const supplied = createCareer(123456789);
+  supplied.profile.funding = 5000;
+  Object.assign(supplied.profile.stash, { dataset: 3, src_code: 3, wind: 3, compute: 12 });
+  const act = (career, action) => {
+    const result = hubAct(career, `research:${action}`);
+    assert.equal(result.ok, true, `research fixture action ${action}: ${result.reason || ''}`);
+  };
+  const empty = createCareer(123456789);
+  for (const id of ['dataset', 'src_code', 'wind', 'compute']) delete empty.profile.stash[id];
+  const readyToStart = structuredClone(supplied);
+  act(supplied, 'start:replicate');
+  act(supplied, 'experiment');
+  const experiment = structuredClone(supplied);
+  const missing = structuredClone(supplied);
+  delete missing.profile.stash.compute;
+  while (supplied.profile.research.project.runs < 2 || supplied.profile.research.project.quality < careerView(supplied).research.project.target) {
+    act(supplied, 'experiment');
+  }
+  const submit = structuredClone(supplied);
+  act(supplied, 'submit');
+  const review = structuredClone(supplied);
+  act(supplied, 'review');
+  const ready = structuredClone(supplied);
+  act(supplied, 'publish');
+  const promotion = structuredClone(supplied);
+  assert.equal(careerView(promotion).research.actions.find(action => action.id === 'research:promote').disabled, false,
+    'promotion fixture must earn all its real prerequisites');
+  return [
+    { name: 'empty', career: empty, action: null },
+    { name: 'start', career: readyToStart, action: 'research:start:replicate' },
+    { name: 'missing', career: missing, action: 'research:experiment', disabled: true },
+    { name: 'experiment', career: experiment, action: 'research:experiment' },
+    { name: 'submit', career: submit, action: 'research:submit' },
+    { name: 'review', career: review, action: 'research:review' },
+    { name: 'ready', career: ready, action: 'research:publish' },
+    { name: 'promotion', career: promotion, action: 'research:promote' },
+  ];
+}
 
 async function freePort() {
   const probe = createServer();
@@ -127,11 +218,230 @@ function requestId(label) {
   return `prob_browser_${label}_${randomBytes(8).toString('hex')}`;
 }
 
-async function difficultyPreviewNumber(page, field) {
-  const value = (await page.locator(`#setup-difficulty-numbers [data-preview-field="${field}"]`).textContent() || '').trim();
-  const match = value.match(/[+\-−]?\d+(?:\.\d+)?/);
-  assert.ok(match, `difficulty preview ${field} should contain a numeric value: ${value}`);
-  return Number(match[0].replace('−', '-'));
+function expectedLikelihood(value) {
+  const chance = Number(value);
+  if (chance >= 90) return '把握很大';
+  if (chance >= 70) return '较有把握';
+  if (chance >= 45) return '尚有机会';
+  if (chance >= 20) return '不太容易';
+  return chance > 0 ? '希望渺茫' : '暂无机会';
+}
+
+function expectedEncounter(value) {
+  const chance = Number(value);
+  return chance === 0 ? '暂时平静' : chance >= 80 ? '动静频繁' : chance >= 45 ? '容易遇事' : '偶有动静';
+}
+
+function expectedMaterial(value) {
+  const chance = Number(value);
+  return chance >= 40 ? '常见' : chance >= 20 ? '偶有发现' : chance > 0 ? '较难寻找' : '暂无线索';
+}
+
+function expectedRisk(value) {
+  const risk = Number(value);
+  return risk < 25 ? '从容' : risk < 50 ? '需留心' : risk < 75 ? '紧张' : '险峻';
+}
+
+async function setDisclosure(page, selector, open = true) {
+  const details = page.locator(selector);
+  await details.waitFor({ state: 'visible', timeout: 7000 });
+  assert.equal(await details.evaluate(element => element.tagName), 'DETAILS', `${selector} should be a native disclosure`);
+  if (await details.evaluate(element => element.open) !== open) {
+    await details.locator(':scope > summary').click();
+  }
+  assert.equal(await details.evaluate(element => element.open), open, `${selector} should be ${open ? 'expanded' : 'collapsed'}`);
+}
+
+async function openEquipmentDetails(page) {
+  await activateWorkspace(page, 'prepare');
+  await setDisclosure(page, '#equipment-details');
+}
+
+async function assertNoNumericProbabilities(page) {
+  // textContent deliberately includes closed details and inactive workspaces.
+  // Inspect accessibility text as well, but not CSS percentages or ordinary costs/counts.
+  const leaks = await page.evaluate(() => {
+    const numericChance = /(?:[+−-]?\d+(?:\.\d+)?\s*[%％]|\d+(?:\.\d+)?\s*(?:个)?百分点|百分之\s*[\d一二三四五六七八九十百零两]+)/;
+    const found = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (node.parentElement?.closest('script,style,noscript')) continue;
+      if (numericChance.test(node.textContent)) found.push({ source: 'text', text: node.textContent.trim() });
+    }
+    for (const element of document.body.querySelectorAll('*')) {
+      for (const name of ['title', 'aria-label', 'aria-description', 'aria-valuetext']) {
+        const text = element.getAttribute(name);
+        if (text && numericChance.test(text)) found.push({ source: name, text });
+      }
+    }
+    return found;
+  });
+  assert.deepEqual(leaks, [], `numeric probabilities must not appear in visible, hidden, or accessibility copy: ${JSON.stringify(leaks)}`);
+  assert.equal(await page.locator('#prob-partial, #prob-fail, #probability-parts, #setup-difficulty-numbers, #result-full, #result-partial, #result-fail').count(), 0,
+    'retired numerical probability panels should be removed rather than merely hidden');
+  assert.equal(await page.locator('.risk-meter[aria-valuenow]').count(), 0, 'risk should be described qualitatively for assistive technology too');
+}
+
+async function assertFirstScreenIsConcise(page, phase) {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const firstScreen = await page.evaluate(() => {
+    const texts = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (!node.textContent.trim() || node.parentElement?.closest('script,style,noscript')) continue;
+      const element = node.parentElement;
+      if (!element || getComputedStyle(element).visibility === 'hidden') continue;
+      let hiddenInDisclosure = false;
+      for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {
+        if (ancestor.tagName === 'DETAILS' && !ancestor.open && !ancestor.querySelector(':scope > summary')?.contains(node)) {
+          hiddenInDisclosure = true;
+          break;
+        }
+      }
+      if (hiddenInDisclosure) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const rects = [...range.getClientRects()];
+      if (rects.some(rect => rect.width > 0 && rect.height > 0 && rect.top < innerHeight && rect.bottom > 0 && rect.left < innerWidth && rect.right > 0)) {
+        texts.push(node.textContent.trim());
+      }
+    }
+    return { width: innerWidth, text: texts.join(' ').replace(/\s+/g, ' ').trim() };
+  });
+  const limit = firstScreen.width <= 760 ? 460 : 700;
+  firstScreenMetrics.push({ phase, width: firstScreen.width, visibleTextCharacters: firstScreen.text.length, limit });
+  assert.ok(firstScreen.text.length <= limit,
+    `${phase} first screen should stay concise (${firstScreen.text.length}/${limit} characters): ${firstScreen.text}`);
+  const primary = phase === 'hub' ? '#hub-start-raid' : '#raid-actions [data-action="search"], #raid-actions [data-action="extract"]';
+  const controls = await page.locator(primary).evaluateAll(nodes => nodes.map(node => {
+    const rect = node.getBoundingClientRect();
+    return { text: node.textContent.trim(), top: rect.top, bottom: rect.bottom, height: rect.height };
+  }));
+  const viewportHeight = page.viewportSize()?.height || 900;
+  assert.ok(controls.length && controls.every(control => control.height > 0 && control.top >= 0 && control.bottom <= viewportHeight),
+    `${phase} primary actions should be reachable in the first screen: ${JSON.stringify(controls)}`);
+}
+
+async function assertRaidOutlooks(page, state) {
+  const selectedId = await page.locator('#search-approaches [aria-pressed="true"]').getAttribute('data-search-approach').catch(() => null);
+  const selected = state.view.expedition?.approaches?.find(row => row.actionId === selectedId);
+  const acquisition = selected?.searchPreview.acquisition ?? state.view.probabilities.acquisition;
+  const encounter = selected?.searchPreview.encounter ?? state.view.probabilities.encounter;
+  for (const [id, expected] of [['prob-acquisition', expectedLikelihood(acquisition)], ['prob-encounter', state.view.event ? '正在应对' : expectedEncounter(encounter)],
+    ['prob-full', expectedLikelihood(state.view.probabilities.full)]]) {
+    assert.equal((await page.locator(`#${id}`).innerText()).trim(), expected,
+      `${id} should describe its live server probability in words`);
+  }
+  assert.ok((await page.locator('#raid-statusline').innerText()).includes(expectedRisk(state.view.stats.risk)),
+    'the current risk should use its qualitative tier');
+  assert.doesNotMatch(await page.locator('#raid-statusline').innerText(), /风险\s*[+−-]?\d/,
+    'the compact risk status should not expose a precise risk number');
+  await assertNoNumericProbabilities(page);
+}
+
+async function assertFieldJourney(page, state, label = 'field') {
+  const cockpit = page.locator('#raid-cockpit');
+  await cockpit.waitFor({ state: 'visible', timeout: 5000 });
+  assert.equal(await cockpit.locator('#field-scene').count(), 1, 'the field artwork and current decisions should share one play surface');
+  assert.equal(await cockpit.locator('#field-decision').count(), 1, 'the next decision belongs beside the field, not in a later detached card');
+  assert.ok((await page.locator('#field-depth').innerText()).includes(state.view.expedition.depthLabel),
+    'field depth must represent the current server depth, not an invented route or destination');
+  assert.equal(await page.locator('#field-depth').getAttribute('data-depth-label'), state.view.expedition.depthLabel,
+    'the active depth label must track the real reversible server state');
+  assert.equal((await page.locator('#field-depth [aria-current="true"]').innerText()).trim(), state.view.expedition.depthLabel,
+    'exactly the current real depth should be highlighted');
+  assert.equal(await page.locator('#field-depth button, #field-depth a').count(), 0,
+    'the accumulated-depth indicator must not pretend to offer navigable map nodes');
+  assert.ok((await page.locator('#field-next-step').innerText()).trim(), 'the cockpit should state the immediate next step');
+  for (const [key, now, max] of [['will', state.view.stats.will, state.view.stats.willMax], ['bag', state.view.bagUsed, state.view.bagCap]]) {
+    const meter = page.locator(`#raid-statusline [data-vital="${key}"][role="progressbar"], #raid-statusline [data-vital="${key}"] [role="progressbar"]`);
+    assert.equal(await meter.count(), 1, `${key} should have one accessible live resource meter`);
+    assert.equal(Number(await meter.getAttribute('aria-valuenow')), Number(now), `${key} meter should use the real count`);
+    assert.equal(Number(await meter.getAttribute('aria-valuemax')), Number(max), `${key} meter should use the real capacity`);
+    assert.equal(await meter.isVisible(), true, `${key} should remain visible during the current decision`);
+  }
+  const nextSelector = state.view.pendingLoot?.length
+    ? '#pending-loot-actions [data-action]:not(:disabled)'
+    : state.view.event ? '#event-choices [data-action]:not(:disabled)'
+      : '#raid-actions [data-action^="search"]:not(:disabled), #raid-actions [data-action="extract"]:not(:disabled)';
+  const next = page.locator(nextSelector).first();
+  assert.ok(await next.count(), 'the active field state should offer a reachable decision');
+  const layout = await page.evaluate(selector => {
+    const scene = document.querySelector('#field-scene').getBoundingClientRect();
+    const cockpit = document.querySelector('#raid-cockpit').getBoundingClientRect();
+    const decision = document.querySelector('#field-decision').getBoundingClientRect();
+    const action = document.querySelector(selector).getBoundingClientRect();
+    return { width: innerWidth, sceneTop: scene.top, sceneBottom: scene.bottom, cockpitTop: cockpit.top,
+      decisionTop: decision.top, actionTop: action.top, actionBottom: action.bottom, actionHeight: action.height };
+  }, nextSelector);
+  assert.ok(layout.actionHeight >= 40, `${label}: the next decision needs a usable click/touch target: ${JSON.stringify(layout)}`);
+  assert.ok(layout.actionTop - layout.cockpitTop < 880,
+    `${label}: the next decision must stay near the field in the first cockpit screen: ${JSON.stringify(layout)}`);
+  if (layout.width >= 1000) {
+    assert.ok(layout.decisionTop < layout.sceneBottom,
+      `${label}: desktop decisions should align alongside the scene: ${JSON.stringify(layout)}`);
+  } else {
+    assert.ok(layout.decisionTop - layout.sceneBottom < 300,
+      `${label}: mobile decisions should immediately follow the compact scene and feedback: ${JSON.stringify(layout)}`);
+  }
+  if (state.view.lastAction) {
+    assert.equal(await cockpit.locator('#raid-turn-card').count(), 1, 'the latest action feedback should remain inside the live field surface');
+  }
+  journeyMetrics.push({ label, ...layout });
+  await assertFitsViewport(page, label);
+}
+
+async function assertImmediateEventAction(page, state) {
+  if (!state.view.event && !state.view.pendingLoot?.length) return;
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const firstUsable = page.locator(state.view.pendingLoot?.length
+    ? '#pending-loot-actions [data-action]:not(:disabled)'
+    : '#event-choices [data-action]:not(:disabled)').first();
+  const geometry = await firstUsable.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    return { width: innerWidth, height: innerHeight, top: rect.top, bottom: rect.bottom, label: element.innerText };
+  });
+  assert.ok(geometry.top >= 0 && geometry.bottom <= geometry.height,
+    `the first usable pending-loot/event action must be visible immediately, without scrolling through unavailable choices or item details: ${JSON.stringify(geometry)}`);
+}
+
+async function assertSearchApproaches(page, state) {
+  const approaches = state.view.expedition?.approaches;
+  assert.equal(approaches?.length, 3, 'a new expedition should offer three distinct search approaches');
+  assert.deepEqual(approaches.map(row => row.actionId).sort(), ['search', 'search:cautious', 'search:deep']);
+  assert.equal(await page.locator('#search-approaches [data-search-approach]').count(), 3);
+  assert.ok((await page.locator('#field-scene').innerText()).includes(state.view.expedition.condition.name),
+    'the expedition should explain its current field condition');
+  const requests = [];
+  const recordMutation = request => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/expedition/action') requests.push(request);
+  };
+  page.on('request', recordMutation);
+  try {
+    for (const approach of approaches) {
+      const option = page.locator(`#search-approaches [data-search-approach="${approach.actionId}"]`);
+      assert.equal(await option.isEnabled(), true, 'search styles should be selectable on arrival');
+      await option.click();
+      assert.equal(await option.getAttribute('aria-pressed'), 'true', 'the chosen search style should be clear');
+      assert.equal(await page.locator('#raid-actions [data-action^="search"]').count(), 1,
+        'the style chooser should keep a single primary search action');
+      assert.equal(await page.locator('#raid-actions [data-action^="search"]').getAttribute('data-action'), approach.actionId,
+        'the primary search should commit the selected style');
+      assert.equal((await page.locator('#approach-hint').innerText()).trim(), approach.hint,
+        'style tradeoffs should remain readable before committing a search');
+      await assertRaidOutlooks(page, state);
+    }
+    await page.locator('#search-approaches [data-search-approach="search"]').click();
+    const after = await readState(page);
+    assert.equal(after.view.revision, state.view.revision, 'previewing styles should never advance the expedition');
+    assert.deepEqual(after.view.stats, state.view.stats, 'previewing styles must not spend heart or change risk');
+    assert.deepEqual(after.view.expedition, state.view.expedition, 'previewing styles must not reroll the field condition');
+    assert.equal(requests.length, 0, 'previewing styles must not submit an expedition action');
+  } finally {
+    page.off('request', recordMutation);
+  }
 }
 
 function assertWarehouseLedgerView(hub) {
@@ -148,11 +458,6 @@ function assertWarehouseLedgerView(hub) {
   }
 }
 
-function displayedPercent(text) {
-  const match = String(text || '').match(/\d+(?:\.\d+)?/);
-  assert.ok(match, `expected a displayed percentage: ${text}`);
-  return Number(match[0]);
-}
 
 async function activateWorkspace(page, workspace) {
   const tab = page.locator(`[data-workspace-tab="${workspace}"]`).first();
@@ -160,6 +465,16 @@ async function activateWorkspace(page, workspace) {
   await tab.waitFor({ state: 'visible', timeout: 7000 });
   if (await tab.getAttribute('aria-selected') !== 'true') await tab.click();
   await page.locator(`#workspace-panel-${workspace}`).waitFor({ state: 'visible', timeout: 5000 });
+}
+
+async function revealActionDetails(button) {
+  // Secondary research controls remain user-operable after moving into native
+  // disclosures. Open their actual enclosing summaries rather than mutating DOM.
+  const parents = button.locator('xpath=ancestor::details');
+  for (let index = 0; index < await parents.count(); index += 1) {
+    const details = parents.nth(index);
+    if (!(await details.evaluate(element => element.open))) await details.locator(':scope > summary').click();
+  }
 }
 
 async function selectDifficulty(page, id) {
@@ -229,6 +544,8 @@ async function clickHubAction(page, action) {
   else if (verb === 'venue') workspace = 'prepare';
 
   if (workspace) await activateWorkspace(page, workspace);
+  if (zone === 'supplies') await openEquipmentDetails(page);
+  if (verb === 'venue') await setDisclosure(page, '#venue-details');
   if (equipmentSlotAction) {
     await openEquipmentPicker(page, id);
     detailScope = '#equipment-picker-detail';
@@ -252,7 +569,9 @@ async function clickHubAction(page, action) {
   else if (verb === 'upgrade') scope = '#hub-screen';
   else if (action.startsWith('research:start:')) scope = '#research-templates';
   else if (action.startsWith('research:')) scope = '#research-actions';
+  if (action.startsWith('research:direction:') || action.startsWith('research:prepare:')) scope = '#research-card';
   const button = page.locator(`${scope} [data-hub-action="${action}"]`).first();
+  if (verb === 'research') await revealActionDetails(button);
   await button.waitFor({ state: 'visible', timeout: 7000 });
   assert.equal(await button.isEnabled(), true, `hub action ${action} should be enabled`);
   const responseWait = waitForApi(page, '/api/hub/action', 'POST', body => body?.action === action);
@@ -261,6 +580,7 @@ async function clickHubAction(page, action) {
   const payload = await response.json();
   await page.waitForFunction(() => !document.body.classList.contains('is-pending'), null, { timeout: 7000 });
   assert.equal(payload.ok, true, `hub action ${action} failed: ${payload.reason || 'no reason returned'}`);
+  await assertNoNumericProbabilities(page);
 
   if (verb === 'buy' && zone === 'shop' && itemId) {
     assert.ok((await page.locator('#shop-item-detail').innerText()).includes(info?.name || itemId), 'shop selection should remain after purchase');
@@ -282,7 +602,7 @@ async function clickHubAction(page, action) {
 const EQUIPMENT_SLOT_LABELS = { bag: '背包', focus: '专注设备', tool: '研究工具', device: '计算设备', storage: '存储设备' };
 
 async function openEquipmentPicker(page, slot) {
-  await activateWorkspace(page, 'prepare');
+  await openEquipmentDetails(page);
   const state = await readState(page);
   const currentId = state.hub.loadout?.[slot] || null;
   const currentItem = currentId ? state.hub.items.find(item => item.id === currentId) : null;
@@ -324,6 +644,7 @@ async function clickPickerAction(page, action) {
   const payload = await response.json();
   await page.waitForFunction(() => !document.body.classList.contains('is-pending'), null, { timeout: 7000 });
   assert.equal(payload.ok, true, `equipment picker action ${action} failed: ${payload.reason || 'no reason returned'}`);
+  await assertNoNumericProbabilities(page);
   return payload;
 }
 
@@ -575,8 +896,8 @@ async function runUncertainMutationScenario(browser, base, pageErrors, externalR
     await purchase.click();
     await page.waitForFunction(() => {
       const action = document.querySelector('#shop-item-detail [data-hub-action="buy:wind"]');
-      const feedback = document.querySelector('#global-feedback')?.innerText || '';
-      return action?.disabled && feedback.includes('同步存档');
+      const feedback = document.querySelector('#hub-feedback')?.innerText || '';
+      return action?.disabled && feedback.includes('同步进度');
     }, null, { timeout: 10_000 });
     assert.equal(attemptedBodies.length, 3, 'two submits plus the automatic reconciliation retry should be aborted');
     const originalRequestId = attemptedBodies[0]?.requestId;
@@ -596,8 +917,8 @@ async function runUncertainMutationScenario(browser, base, pageErrors, externalR
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 });
     await page.locator('#hub-screen').waitFor({ state: 'visible', timeout: 10_000 });
     await page.waitForFunction(() => {
-      const feedback = document.querySelector('#global-feedback')?.innerText || '';
-      return feedback.includes('同步存档') && !document.body.classList.contains('is-pending');
+      const feedback = document.querySelector('#hub-feedback')?.innerText || '';
+      return feedback.includes('同步进度') && !document.body.classList.contains('is-pending');
     }, null, { timeout: 10_000 });
     assert.ok(attemptedBodies.length >= 4, 'reloading should retry the persisted uncertain mutation with the same request');
     assert.ok(attemptedBodies.every(body => body?.requestId === originalRequestId && body.action === 'buy:wind'),
@@ -620,6 +941,82 @@ async function runUncertainMutationScenario(browser, base, pageErrors, externalR
       (before.hub.items.find(item => item.id === 'wind')?.count || 0) + 1, 'the retry should buy exactly one item');
     assert.equal(await page.evaluate(() => sessionStorage.getItem('xuefa-pending-request')), null,
       'a confirmed replay should clear the persisted uncertain request');
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
+async function runSearchStyleCommitScenario(browser, base, saveDir, pageErrors, externalRequests, responses) {
+  const sid = randomBytes(12).toString('hex');
+  const career = createCareer(42687);
+  career.run = createProbabilityRaid({ seed: 42687, raidId: `qa-search-styles-${sid}`, venue: 'conference', difficulty: 'normal',
+    player: career.profile.identity, loadout: Object.values(career.profile.loadout).filter(Boolean),
+    network: career.profile.network, contacts: career.profile.contacts });
+  // Keep this fixture focused on atomic style commits; event and overflow handling
+  // retain their separate full regression scenarios below.
+  career.run.eventCount = 4;
+  career.run.bagCap = 100;
+  await fs.writeFile(path.join(saveDir, `${sid}.json`), JSON.stringify(career), 'utf8');
+  const context = await browser.newContext({ baseURL: base, viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  page.on('pageerror', error => pageErrors.push(error.message));
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (['http:', 'https:'].includes(url.protocol) && !LOCAL_ORIGINS.has(url.origin)) externalRequests.push(url.href);
+  });
+  page.on('response', response => {
+    if (new URL(response.url()).pathname.toLowerCase().endsWith('.png')) responses.push({ url: response.url(), status: response.status() });
+  });
+  try {
+    await context.addCookies([{ name: 'sid', value: sid, url: base }]);
+    await page.goto(`${base}/`, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+    await page.locator('#raid-screen').waitFor({ state: 'visible', timeout: 10_000 });
+    let state = await readState(page);
+    const initialCondition = state.view.expedition.condition.id;
+    for (const action of ['search:deep', 'search:cautious']) {
+      const before = state;
+      const approach = before.view.expedition.approaches.find(row => row.actionId === action);
+      assert.ok(approach && !approach.disabled, `${action} should be available in its isolated scenario`);
+      await page.locator(`#search-approaches [data-search-approach="${action}"]`).click();
+      await assertRaidOutlooks(page, before);
+      assert.match(await page.locator(`#raid-actions [data-action="${action}"]`).innerText(), /心力\s*−1/,
+        'the primary search should retain its ordinary heart cost');
+      state = await clickRaidAction(page, action);
+      assert.equal(state.view.revision, before.view.revision + 1, 'a style-specific search should commit exactly once');
+      assert.equal(state.view.stats.will, before.view.stats.will - approach.searchPreview.willCost,
+        'the committed style should charge the previewed heart cost');
+      assert.equal(state.view.stats.risk, approach.searchPreview.riskAfter,
+        'the committed style should apply its previewed risk cost');
+      assert.equal(state.view.event, null, 'the isolated style fixture should keep events out of the way');
+      assert.equal(state.view.pendingLoot.length, 0, 'the isolated style fixture should have enough bag space');
+      assert.ok((await page.locator('#field-scene').innerText()).includes(state.view.expedition.condition.name),
+        'the field condition must refresh after the committed search');
+      await assertTurnCardUi(page, state);
+      await assertRaidOutlooks(page, state);
+      await assertFieldJourney(page, state, `committed-${action}`);
+    }
+    assert.notEqual(state.view.expedition.condition.id, initialCondition, 'two searches should move into a distinct field condition');
+    for (const selector of ['#raid-observations', '#raid-bag-details', '#raid-journal']) await setDisclosure(page, selector);
+    await clickRaidAction(page, 'extract');
+    const returnWait = waitForApi(page, '/api/hub/return', 'POST');
+    await page.locator('#result-return').click();
+    await returnWait;
+    await page.locator('#hub-screen').waitFor({ state: 'visible', timeout: 7000 });
+    await activateWorkspace(page, 'prepare');
+    const newWait = waitForApi(page, '/api/new', 'POST');
+    await page.locator('#hub-start-raid').click();
+    const fresh = await (await newWait).json();
+    await page.waitForFunction(() => !document.body.classList.contains('is-pending'), null, { timeout: 7000 });
+    assert.equal(fresh.phase, 'raid');
+    assert.notEqual(fresh.view.raidId, state.view.raidId, 'returning and launching should create a new expedition');
+    for (const selector of ['#raid-observations', '#raid-bag-details', '#raid-journal']) {
+      assert.equal(await page.locator(selector).evaluate(element => element.open), false,
+        `${selector} should reset to closed for a new expedition`);
+    }
+    assert.equal(await page.locator('#search-approaches [aria-pressed="true"]').getAttribute('data-search-approach'), 'search',
+      'a new expedition should reset its primary action to regular search');
+    await assertRaidOutlooks(page, fresh);
+    await clickRaidAction(page, 'extract');
   } finally {
     await context.close().catch(() => {});
   }
@@ -663,6 +1060,12 @@ async function runFullBagEventUiScenario(browser, base, saveDir, pageErrors, ext
     image: '/assets/generated/research-desk.png',
     difficulty: 0,
     choices: [{
+      key: 'reserve-help', name: '用人脉预约技术协助', cost: { network: 99 },
+      onSuccess: { riskDelta: -3, text: '技术协助已预约。' },
+    }, {
+      key: 'show-code', name: '提供模型源码进行排查', requires: { src_code: 1 }, cost: {},
+      onSuccess: { riskDelta: -3, text: '源码排查已完成。' },
+    }, {
       key: 'stabilize', name: '隔离热源并继续记录', cost: {},
       onSuccess: { riskDelta: -3, support: 4, text: '散热恢复，现场记录已保存。' },
     }],
@@ -702,19 +1105,32 @@ async function runFullBagEventUiScenario(browser, base, saveDir, pageErrors, ext
     await page.locator('#raid-screen').waitFor({ state: 'visible', timeout: 10_000 });
     let state = await readState(page);
     assert.equal(state.phase, 'raid');
+    for (const width of [320, 390, 768, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      assert.equal(await page.locator('#field-search-controls').isVisible(), false,
+        'search controls and forecasts should give priority to the pending loot/event decision');
+      await assertRaidOutlooks(page, state);
+      await assertFieldJourney(page, state, `event-and-overflow-${width}`);
+      await assertImmediateEventAction(page, state);
+    }
+    await page.setViewportSize({ width:390, height:844 });
     assert.equal(state.view.bagUsed, state.view.bagCap, 'the isolated UI fixture should fill the bag exactly');
     assert.equal(state.view.pendingLoot.length, 1);
     assert.ok(state.view.event, 'a full bag must coexist with its unresolved event');
     await assertTurnCardUi(page, state);
     await assertEncounterUi(page, state);
+    state = await assertReloadPreservesState(page, state, 'unresolved event and full-bag discovery');
+    await assertFieldJourney(page, state, 'recovered-event-and-overflow');
     let leaveOption = page.locator('#event-choices .decision-option').filter({ has: page.locator('[data-action="event:leave"]') });
     let leaveButton = leaveOption.locator('[data-action="event:leave"]');
+    await revealActionDetails(leaveButton);
     await leaveButton.waitFor({ state: 'visible', timeout: 5000 });
     assert.equal(await leaveButton.isEnabled(), false, 'an event exit must be disabled while a fresh item is pending');
     const blockedLeaveText = await leaveOption.innerText();
-    assert.match(blockedLeaveText, /先整理本轮发现|整理后更新撤离概率/, 'disabled leave should explain that pending loot changes exit odds');
-    assert.doesNotMatch(blockedLeaveText, /完整\s*\d+(?:\.\d+)?%.*部分\s*\d+(?:\.\d+)?%.*失败\s*\d+(?:\.\d+)?%/s,
-      'the pending-loot leave card must not display a stale exact exit distribution');
+    assert.match(blockedLeaveText, /先整理本轮发现|整理后更新撤离|先整理/, 'disabled leave should explain that pending loot blocks extraction');
+    assert.equal(await page.locator('#raid-bag-details').evaluate(element => element.open), true,
+      'pending loot that does not fit should automatically expose the bag cleanup controls');
+    await assertNoNumericProbabilities(page);
 
     const dropped = await clickRaidAction(page, 'drop:0');
     assert.equal(dropped.view.bag.length, 0, 'dropping from the bag detail should free one slot without closing the event');
@@ -728,8 +1144,17 @@ async function runFullBagEventUiScenario(browser, base, saveDir, pageErrors, ext
     leaveOption = page.locator('#event-choices .decision-option').filter({ has: page.locator('[data-action="event:leave"]') });
     leaveButton = leaveOption.locator('[data-action="event:leave"]');
     assert.equal(await leaveButton.isEnabled(), true, 'the event exit should re-enable after pending loot is sorted');
-    assert.match(await leaveOption.innerText(), /完整\s*\d+(?:\.\d+)?%.*部分\s*\d+(?:\.\d+)?%.*失败\s*\d+(?:\.\d+)?%/s,
-      'the restored event exit should show the current full/partial/fail odds');
+    const exitAction = accepted.view.event.actions.find(action => action.id === 'event:leave');
+    assert.ok(exitAction?.exitProbabilities, 'the restored event exit should use a current server forecast');
+    assert.ok((await leaveOption.textContent()).includes(expectedLikelihood(exitAction.exitProbabilities.full)),
+      'the restored event exit should describe its current full-return outlook qualitatively');
+    await assertNoNumericProbabilities(page);
+    await assertFieldJourney(page, accepted, 'sorted-loot-event-remains');
+    for (const width of [320, 390, 1440]) {
+      await page.setViewportSize({ width, height: width === 1440 ? 900 : 844 });
+      await assertImmediateEventAction(page, accepted);
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
 
     await clearEvent(page, accepted);
     state = await readState(page);
@@ -758,6 +1183,7 @@ async function clickRaidAction(page, action, scope = '#raid-actions') {
   let beforeBag = null;
   let selectedBagKey = null;
   if (itemAction) {
+    await setDisclosure(page, '#raid-bag-details');
     const index = Number(itemAction[2]);
     const before = (await readState(page)).view;
     beforeBag = (before.bag || []).map(item => item.id);
@@ -782,6 +1208,8 @@ async function clickRaidAction(page, action, scope = '#raid-actions') {
   const payload = await response.json();
   await page.waitForFunction(() => !document.body.classList.contains('is-pending'), null, { timeout: 7000 });
   assert.equal(payload.ok, true, `raid action ${action} failed: ${payload.reason || 'no reason returned'}`);
+  if (payload.phase === 'raid') await assertRaidOutlooks(page, payload);
+  else await assertNoNumericProbabilities(page);
   if (itemAction?.[1] === 'drop') {
     const afterBag = (payload.view.bag || []).map(item => item.id);
     const index = Number(itemAction[2]);
@@ -847,11 +1275,19 @@ async function clearEvent(page, state) {
     const original = page.viewportSize() || { width: 1440, height: 900 };
     try {
       await page.setViewportSize({ width: 1440, height: 900 });
+      await assertFieldJourney(page, state, 'event-desktop');
+      await assertImmediateEventAction(page, state);
+      await page.evaluate(() => window.scrollTo(0, 0));
       await page.screenshot({ path: EVENT_DESKTOP_SHOT, fullPage: true });
+      await page.screenshot({ path: FIELD_EVENT_DESKTOP_SHOT });
       await page.setViewportSize({ width: 390, height: 844 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false,
         'the open event and immediate result card must not create mobile horizontal overflow');
       await page.screenshot({ path: EVENT_MOBILE_SHOT, fullPage: true });
+      await assertFieldJourney(page, state, 'event-mobile');
+      await assertImmediateEventAction(page, state);
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await page.screenshot({ path: FIELD_EVENT_MOBILE_SHOT });
       eventShotsCaptured = true;
     } finally {
       await page.setViewportSize(original);
@@ -898,8 +1334,8 @@ async function assertTurnCardUi(page, state) {
     assert.equal(await page.locator('#raid-turn-items .turn-item').count(), reportedItems.length,
       'the action feedback should list every item added by the latest search');
   }
-  const pacing = await page.locator('#encounter-pacing').innerText();
-  assert.ok(pacing.trim(), 'the encounter pacing notice should stay visible in the field');
+  const pacing = await page.locator('#encounter-pacing').textContent();
+  assert.ok(pacing.trim(), 'encounter pacing should remain available in the optional field observations');
   if (state.view.lastAction?.title) {
     assert.ok((await page.locator('#raid-turn-title').innerText()).includes(state.view.lastAction.title),
       'the visible turn title should match the server-provided latest action');
@@ -923,10 +1359,10 @@ async function assertEncounterUi(page, state) {
   const eventCard = page.locator('#raid-event-card');
   await eventCard.waitFor({ state: 'visible', timeout: 5000 });
   assert.ok((await page.locator('#event-type-label').innerText()).trim(), 'the event card should show its type');
-  const image = page.locator('#event-image');
+  const image = page.locator('#field-scene .scene-object');
   await image.waitFor({ state: 'visible', timeout: 5000 });
   await image.evaluate(element => element.decode());
-  assert.ok(await image.evaluate(element => element.naturalWidth > 0), 'event artwork should load successfully');
+  assert.ok(await image.evaluate(element => element.naturalWidth > 0), 'the artwork on the playable field should load successfully');
   const available = (event.actions || []).filter(action => !action.disabled);
   assert.ok(event.actions?.length > 0, 'the active event should provide at least one server-listed option');
   const options = page.locator('#event-choices .decision-option');
@@ -936,15 +1372,163 @@ async function assertEncounterUi(page, state) {
   assert.equal(await selectedOption.count(), 1, 'the server action should have its own decision card');
   assert.equal(await selectedOption.locator(`[data-action="${choice.id}"]`).isEnabled(), !choice.disabled,
     'the decision card main button should mirror its server availability');
-  for (const selector of ['.decision-cost']) {
-    assert.ok((await selectedOption.locator(selector).innerText()).trim(), `event decision ${selector} should show its gameplay tradeoff`);
+  const cost = selectedOption.locator('.decision-cost');
+  assert.equal(await cost.isVisible(), true, 'event costs must remain visible without expanding consequences');
+  assert.ok((await cost.innerText()).trim(), 'event decisions should show their immediate gameplay cost');
+  const buttonText = await selectedOption.locator(`[data-action="${choice.id}"]`).innerText();
+  if (!isTerminalEventAction(choice) && choice.probability != null) {
+    assert.ok(buttonText.includes(expectedLikelihood(choice.probability)), 'the decision button should show qualitative reliability');
   }
+  const disclosure = selectedOption.locator('details').first();
+  assert.equal(await disclosure.count(), 1, 'event consequences should be in an optional native disclosure');
+  assert.equal(await disclosure.evaluate(element => element.open), false, 'event consequences should start collapsed');
+  await disclosure.locator(':scope > summary').click();
+  const outcomes = selectedOption.locator('.decision-outcomes');
+  assert.equal(await outcomes.isVisible(), true, 'expanded event consequences should be readable');
+  const outcomeText = await outcomes.innerText();
+  assert.ok(outcomeText.trim(), 'event consequences should explain the possible results');
   if (!isTerminalEventAction(choice)) {
-    for (const selector of ['.decision-success', '.decision-failure']) {
-      assert.ok((await selectedOption.locator(selector).innerText()).trim(), `event decision ${selector} should explain the result`);
+    assert.match(outcomeText, /成功.*未解决/s, 'a continuing choice should explain both success and failure');
+  } else if (choice.exitProbabilities) {
+    assert.ok(outcomeText.includes(expectedLikelihood(choice.exitProbabilities.full)),
+      'a terminal choice should explain the current qualitative extraction outlook');
+  }
+  await assertNoNumericProbabilities(page);
+  await disclosure.locator(':scope > summary').click();
+
+}
+
+async function assertResearchJourney(page, state, fixture) {
+  const research = state.hub.research;
+  const card = page.locator('#research-card');
+  await card.waitFor({ state: 'visible', timeout: 5000 });
+  assert.doesNotMatch(await card.innerText(), /\b(?:experiment|submitted|revision|rejected|ready)\b/,
+    'research stages should use meaningful player-facing labels rather than internal state names');
+  const primary = card.locator('[data-research-primary]');
+  assert.equal(await primary.count(), 1, `${fixture.name}: one clearly marked next research step should lead the workbench`);
+  assert.equal(await primary.isVisible(), true, `${fixture.name}: the next research step should not need a disclosure`);
+  if (fixture.action) {
+    assert.equal(await primary.getAttribute('data-hub-action'), fixture.action,
+      `${fixture.name}: the prominent action must match the actual research stage`);
+    assert.equal(await primary.isEnabled(), !fixture.disabled,
+      `${fixture.name}: the prominent action must respect real prerequisites`);
+  }
+  if (research.project) {
+    for (const [key, now, max] of [['runs', research.project.runs, 6], ['quality', research.project.quality, 100]]) {
+      const meter = card.locator(`[data-research-progress="${key}"]`);
+      assert.equal(await meter.count(), 1, `${key} needs one visual research progress indicator`);
+      assert.equal(Number(await meter.getAttribute('aria-valuenow')), Number(now), `${key} must display the actual project value`);
+      assert.equal(Number(await meter.getAttribute('aria-valuemax')), Number(max), `${key} must display the actual project limit or target`);
+      if (key === 'quality') assert.equal(Number(await meter.getAttribute('data-target')), research.project.target,
+        'the quality bar must mark the actual acceptance target separately from its 100-point scale');
     }
-  } else {
-    assert.ok((await selectedOption.locator('.decision-exit').innerText()).trim(), 'a terminal event choice should show its real exit distribution');
+    if (fixture.action === 'research:experiment') {
+      const action = research.actions.find(action => action.id === fixture.action);
+      const actionsText = await page.locator('#research-actions').innerText();
+      assert.ok(actionsText.includes(String(research.project.experimentCost)), 'the next experiment should show its real funding cost');
+      assert.match(actionsText, /算力/, 'the experiment should show its consumed material before committing');
+      if (action.disabled) {
+        for (const reason of action.reason.split('；').filter(Boolean)) {
+          assert.ok((await card.innerText()).includes(reason), `blocked experiment should expose its exact server prerequisite: ${reason}`);
+        }
+      }
+    }
+  } else if (fixture.name !== 'promotion') {
+    const templates = page.locator('#research-templates');
+    for (const template of research.templates) {
+      const button = templates.locator(`[data-hub-action="research:start:${template.id}"]`);
+      assert.equal(await button.isEnabled(), !template.disabled, 'project cards should obey server start requirements');
+    }
+  }
+  const requiredMaterials = page.locator('#research-templates > .rw-current [data-research-material], .rw-main > .rw-current [data-research-material]');
+  for (let index = 0; index < await requiredMaterials.count(); index += 1) {
+    const row = requiredMaterials.nth(index);
+    const id = await row.getAttribute('data-research-material');
+    const stored = state.hub.items.find(item => item.id === id)?.storedCount || 0;
+    assert.equal(Number(await row.getAttribute('data-available')), stored, 'material requirements must use actual stored copies');
+    assert.ok(Number(await row.getAttribute('data-required')) > 0, 'material requirements must state a positive required quantity');
+  }
+  const geometry = await primary.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    const card = document.querySelector('#research-card').getBoundingClientRect();
+    return { width: innerWidth, primaryTop: rect.top - card.top, primaryBottom: rect.bottom - card.top, primaryHeight: rect.height };
+  });
+  assert.ok(geometry.primaryHeight >= 40 && geometry.primaryBottom <= 880,
+    `${fixture.name}: the next research action should be prominent within the first workbench screen: ${JSON.stringify(geometry)}`);
+  journeyMetrics.push({ label: `research-${fixture.name}`, ...geometry });
+  await assertFitsViewport(page, `research ${fixture.name}`);
+  await assertNoNumericProbabilities(page);
+}
+
+async function runResearchJourneyScenarios(browser, base, saveDir, pageErrors, externalRequests, responses) {
+  for (const fixture of createResearchJourneyFixtures()) {
+    const sid = randomBytes(12).toString('hex');
+    await fs.writeFile(path.join(saveDir, `${sid}.json`), JSON.stringify(fixture.career), 'utf8');
+    const context = await browser.newContext({ baseURL: base, viewport: { width: 1440, height: 900 } });
+    const page = await context.newPage();
+    watchScenarioPage(page, pageErrors, externalRequests, responses);
+    try {
+      await context.addCookies([{ name: 'sid', value: sid, url: base }]);
+      await page.goto(`${base}/`, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+      await page.locator('#hub-screen').waitFor({ state: 'visible', timeout: 10_000 });
+      let state = await readState(page);
+      await activateWorkspace(page, 'research');
+      for (const width of [1440, 390, 320]) {
+        await page.setViewportSize({ width, height: width === 1440 ? 900 : 844 });
+        await assertResearchJourney(page, state, fixture);
+        if (fixture.name === 'missing') {
+          await page.locator('#research-card').evaluate(element => element.scrollIntoView({ block: 'start' }));
+          await page.screenshot({ path: width === 1440 ? RESEARCH_DESKTOP_SHOT : width === 390 ? RESEARCH_MOBILE_SHOT : path.join(ARTIFACTS, 'ui-v3-research-320.png') });
+        }
+      }
+      state = await assertReloadPreservesState(page, state, `research ${fixture.name}`);
+      await activateWorkspace(page, 'research');
+      await assertResearchJourney(page, state, fixture);
+      if (fixture.name === 'missing') {
+        const openShop = page.locator('#research-card .rw-sources [data-open-workspace="shop"]');
+        await openShop.click();
+        await page.locator('#workspace-panel-shop').waitFor({ state: 'visible', timeout: 5000 });
+        const afterBrowse = await readState(page);
+        assert.deepEqual(afterBrowse.hub.research, state.hub.research, 'opening the recommended material source must not alter project progress');
+        assert.equal(afterBrowse.hub.funding, state.hub.funding, 'the source shortcut must not automatically purchase materials');
+        await activateWorkspace(page, 'research');
+        await assertResearchJourney(page, state, fixture);
+        const abandon = page.locator('#research-card [data-hub-action="research:abandon"]');
+        await revealActionDetails(abandon);
+        let confirmation = '';
+        page.once('dialog', async dialog => { confirmation = dialog.message(); await dialog.dismiss(); });
+        await abandon.click();
+        assert.match(confirmation, /放弃|不返还/, 'abandonment should explain the permanent loss of invested project resources');
+        const afterCancel = await readState(page);
+        assert.deepEqual(afterCancel.hub.research, state.hub.research, 'canceling abandonment must preserve every part of the active research project');
+        assert.equal(afterCancel.hub.funding, state.hub.funding, 'canceling abandonment must not change funding');
+        page.once('dialog', async dialog => { await dialog.accept(); });
+        const afterAbandon = await clickHubAction(page, 'research:abandon');
+        assert.equal(afterAbandon.hub.research.project, null, 'confirmed abandonment should close the project');
+        assert.equal(afterAbandon.hub.funding, state.hub.funding, 'abandonment must not invent a refund');
+        assert.deepEqual(afterAbandon.hub.items, state.hub.items, 'abandonment must not return spent material');
+        assert.deepEqual(afterAbandon.hub.research.skills, state.hub.research.skills, 'abandonment must preserve earned skills');
+      } else if (fixture.name === 'experiment') {
+        const after = await clickHubAction(page, fixture.action);
+        assert.equal(after.hub.research.project.runs, state.hub.research.project.runs + 1, 'the primary experiment should add exactly one real run');
+        assert.equal(after.hub.funding, state.hub.funding - state.hub.research.project.experimentCost, 'the primary experiment should charge its shown funding cost');
+        assert.equal(after.hub.items.find(item => item.id === 'compute')?.storedCount,
+          state.hub.items.find(item => item.id === 'compute')?.storedCount - 1, 'the primary experiment should consume exactly one real compute card');
+        await assertReloadPreservesState(page, after, 'completed primary experiment');
+      } else if (fixture.name === 'ready') {
+        const after = await clickHubAction(page, fixture.action);
+        assert.equal(after.hub.research.project, null, 'confirming acceptance should finish the current project');
+        assert.equal(after.hub.research.papers.length, state.hub.research.papers.length + 1, 'confirming acceptance should add exactly one actual paper');
+        await assertResearchJourney(page, after, { name: 'promotion', action: 'research:promote' });
+        await assertReloadPreservesState(page, after, 'accepted paper and promotion eligibility');
+      } else if (fixture.name === 'promotion') {
+        const after = await clickHubAction(page, fixture.action);
+        assert.equal(after.hub.research.stage, state.hub.research.stage + 1, 'the prominent promotion should advance exactly one earned stage');
+        await assertReloadPreservesState(page, after, 'earned promotion');
+      }
+    } finally {
+      await context.close().catch(() => {});
+    }
   }
 }
 
@@ -1072,6 +1656,7 @@ async function runSearchField(page, initialState) {
     await page.waitForFunction(() => !document.body.classList.contains('is-pending'), null, { timeout: 7000 });
     assert.equal(current.ok, true, `search ${turn + 1} should commit: ${current.reason || 'no reason returned'}`);
     await assertTurnCardUi(page, current);
+    await assertRaidOutlooks(page, current);
     if (current.view.event?.id) sawEvent = true;
   }
 
@@ -1095,13 +1680,17 @@ try {
   LOCAL_ORIGINS.add(game.base);
 
   const chromePath = [
+    process.env.CHROME_PATH,
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     'C:/Program Files/Google/Chrome/Application/chrome.exe',
     'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
     'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
     'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-  ].find(existsSync);
-  assert.ok(chromePath, 'local Chrome or Edge is required for the isolated browser run');
-  browser = await chromium.launch({ executablePath: chromePath, headless: true });
+  ].filter(Boolean).find(existsSync);
+  browser = await chromium.launch({ ...(chromePath ? { executablePath: chromePath } : {}), headless: true });
   context = await browser.newContext({ baseURL: game.base, viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
   activePage = await context.newPage();
   activePage.on('pageerror', error => pageErrors.push(error.message));
@@ -1114,6 +1703,7 @@ try {
     if (url.pathname.toLowerCase().endsWith('.png')) responses.push({ url: response.url(), status: response.status() });
   });
 
+  await runResearchJourneyScenarios(browser, game.base, saveDir, pageErrors, externalRequests, responses);
   await activePage.goto(`${game.base}/`, { waitUntil: 'domcontentloaded', timeout: 15_000 });
   await activePage.locator('#hub-screen').waitFor({ state: 'visible', timeout: 12_000 });
   const retiredPages = await activePage.evaluate(async () => Promise.all(['/legacy.html', '/redesign.html'].map(async route => {
@@ -1140,36 +1730,33 @@ try {
   const materialPool = activePage.locator('#setup-material-pool [data-material-id]');
   const normalDifficultyPreview = await activePage.locator('#setup-difficulty-preview').innerText();
   assert.ok(normalDifficultyPreview.trim());
-  assert.equal(await activePage.locator('#setup-difficulty-preview .difficulty-summary').count(), 3,
-    'the default preview should present only three plain-language summaries');
-  assert.match(normalDifficultyPreview, /找到材料的机会|材料发现/);
-  assert.match(normalDifficultyPreview, /探索压力|风险/);
+  assert.equal(await activePage.locator('#setup-difficulty-preview > span').count(), 2,
+    'the default preview should present only two short qualitative outlooks');
+  assert.match(normalDifficultyPreview, /发现材料|材料发现/);
   assert.match(normalDifficultyPreview, /完整带回/);
   assert.doesNotMatch(normalDifficultyPreview, /conditionalProbability|weightBonus|eventModifier|extraDropModifier/,
-    'internal probability terms should stay in the optional details');
-  const detailBlock = activePage.locator('#setup-difficulty-details');
-  assert.equal(await detailBlock.getAttribute('open'), null, 'exact difficulty odds should start collapsed');
-  assert.equal(await activePage.locator('#setup-material-details').getAttribute('open'), null,
-    'natural material percentages should start collapsed');
-  const normalPreviewData = conferenceSetup.difficultyPreviews.find(row => row.difficultyId === 'normal');
-  assert.equal(await difficultyPreviewNumber(activePage, 'acquisition'), normalPreviewData.acquisition);
-  assert.equal(await difficultyPreviewNumber(activePage, 'searchGrowth'), normalPreviewData.searchGrowth);
-  assert.equal(await difficultyPreviewNumber(activePage, 'encounter'), normalPreviewData.encounter,
-    'the setup event-spawn preview should match the server probability for a new run');
-  await detailBlock.locator('summary').click();
-  assert.notEqual(await detailBlock.getAttribute('open'), null, 'the precise numbers should be expandable on demand');
-  for (const field of ['acquisition', 'searchGrowth', 'encounter', 'full', 'partial', 'fail']) {
-    assert.ok(await activePage.locator(`#setup-difficulty-numbers [data-preview-field="${field}"]`).count(),
-      `expanded details should retain the ${field} probability`);
+    'internal probability terms should not reach the preparation summary');
+  for (const selector of ['#setup-detail-panel', '#equipment-details', '#venue-details']) {
+    assert.equal(await activePage.locator(selector).evaluate(element => element.open), false,
+      `${selector} should start collapsed so departure choices remain primary`);
   }
-  await detailBlock.locator('summary').click();
-  assert.equal(await detailBlock.getAttribute('open'), null);
+  assert.equal(await activePage.locator('#hub-stats .stat').count(), 2, 'the hub should show only funds and research stage');
+  assert.equal(await activePage.locator('#career-stats').isVisible(), false, 'lifetime statistics belong in records');
+  const normalPreviewData = conferenceSetup.difficultyPreviews.find(row => row.difficultyId === 'normal');
+  const normalSummaries = await activePage.locator('#setup-difficulty-preview b').allTextContents();
+  assert.deepEqual(normalSummaries.map(value => value.trim()), [expectedLikelihood(normalPreviewData.acquisition),
+    expectedLikelihood(normalPreviewData.full)], 'the setup summaries should translate the live server forecast into words');
+  await assertNoNumericProbabilities(activePage);
+  await setDisclosure(activePage, '#setup-detail-panel');
+  assert.equal(await activePage.locator('#setup-material-pool').isVisible(), true, 'location material tendencies should remain available on demand');
   const setupPoolRows = await materialPool.evaluateAll(rows => rows.map(row => ({
-    id: row.dataset.materialId, rate: row.querySelector('strong')?.textContent || '',
+    id: row.dataset.materialId, rate: row.querySelector('strong')?.textContent?.trim() || '',
   })));
-  assert.deepEqual(setupPoolRows.map(row => ({ id: row.id, rate: displayedPercent(row.rate) })).sort((a, b) => a.id.localeCompare(b.id)),
-    normalPreviewData.materials.map(row => ({ id: row.id, rate: row.conditionalProbability })).sort((a, b) => a.id.localeCompare(b.id)),
-  'the setup natural pool should render the server conditional material weights');
+  assert.deepEqual(setupPoolRows.sort((a, b) => a.id.localeCompare(b.id)),
+    normalPreviewData.materials.map(row => ({ id: row.id, rate: expectedMaterial(row.conditionalProbability) })).sort((a, b) => a.id.localeCompare(b.id)),
+    'the setup material pool should describe server conditional weights qualitatively');
+  await assertNoNumericProbabilities(activePage);
+  await setDisclosure(activePage, '#setup-detail-panel', false);
   assert.equal(await materialPool.count(), 4, 'the live preparation panel should preview all naturally occurring material types');
   assert.deepEqual((await materialPool.evaluateAll(rows => rows.map(row => row.dataset.materialId))).sort(),
     ['compute', 'dataset', 'src_code', 'wind']);
@@ -1183,28 +1770,33 @@ try {
   assert.equal(await activePage.locator('[data-workspace-tab="records"]').getAttribute('aria-selected'), 'true');
   await activePage.keyboard.press('Home');
   assert.equal(await activePage.locator('[data-workspace-tab="prepare"]').getAttribute('aria-selected'), 'true');
-  const normalPreviewText = await activePage.locator('#setup-difficulty-preview').innerText();
+  const normalPreviewText = await activePage.locator('#setup-difficulty-description').innerText();
   await selectDifficulty(activePage, 'hard');
-  const hardPreviewText = await activePage.locator('#setup-difficulty-preview').innerText();
-  assert.notEqual(hardPreviewText, normalPreviewText, 'choosing hard should update the payoff, risk, event, and drop preview');
+  const hardPreviewText = await activePage.locator('#setup-difficulty-description').innerText();
+  assert.notEqual(hardPreviewText, normalPreviewText, 'choosing hard should update its qualitative challenge description');
   const hardPreviewData = conferenceSetup.difficultyPreviews.find(row => row.difficultyId === 'hard');
-  assert.equal(await difficultyPreviewNumber(activePage, 'acquisition'), hardPreviewData.acquisition);
-  assert.equal(await difficultyPreviewNumber(activePage, 'searchGrowth'), hardPreviewData.searchGrowth);
-  assert.equal(await difficultyPreviewNumber(activePage, 'encounter'), hardPreviewData.encounter);
+  const hardSummaries = await activePage.locator('#setup-difficulty-preview b').allTextContents();
+  assert.equal(hardSummaries[0].trim(), expectedLikelihood(hardPreviewData.acquisition));
+  assert.equal(hardSummaries[1].trim(), expectedLikelihood(hardPreviewData.full));
   const hardDifficulty = state.hub.probabilitySetup.difficulties.find(row => row.id === 'hard');
-  assert.equal(hardDifficulty.eventModifier, -10);
-  assert.match(await activePage.locator('#setup-difficulty-numbers [data-preview-field="eventModifier"]').textContent(), /降低\s*10/,
-    'hard mode should explain that response checks are ten points harder than standard');
-  assert.equal(await difficultyPreviewNumber(activePage, 'extraDrop'), hardPreviewData.extraDrop);
-  for (const field of ['full', 'partial', 'fail']) assert.equal(await difficultyPreviewNumber(activePage, field), hardPreviewData[field]);
+  assert.equal(hardDifficulty.eventModifier, -10, 'the internal hard-mode response penalty should remain intact');
+  await assertNoNumericProbabilities(activePage);
   await activateWorkspace(activePage, 'shop');
   await activateWorkspace(activePage, 'prepare');
   assert.equal(await activePage.locator('#setup-difficulty-options [data-difficulty-choice="hard"]').getAttribute('aria-pressed'), 'true',
     'difficulty selection should survive workspace rerenders');
+  await activePage.evaluate(() => window.scrollTo(0, 0));
+  await assertFirstScreenIsConcise(activePage, 'hub');
+  await activePage.screenshot({ path: path.join(ARTIFACTS, 'ui-after-desktop-viewport.png') });
+  await activePage.screenshot({ path: path.join(ARTIFACTS, 'ui-v2-prepare-desktop.png') });
   await activePage.screenshot({ path: DIFFICULTY_DESKTOP_SHOT, fullPage: true });
   await activePage.setViewportSize({ width: 390, height: 844 });
   assert.equal(await activePage.evaluate(() => document.documentElement.scrollWidth > innerWidth), false,
     'the new difficulty cards and natural material pool should not overflow on mobile');
+  await activePage.evaluate(() => window.scrollTo(0, 0));
+  await assertFirstScreenIsConcise(activePage, 'hub');
+  await activePage.screenshot({ path: path.join(ARTIFACTS, 'ui-after-mobile-viewport.png') });
+  await activePage.screenshot({ path: path.join(ARTIFACTS, 'ui-v2-prepare-mobile.png') });
   await activePage.screenshot({ path: DIFFICULTY_MOBILE_SHOT, fullPage: true });
   await activePage.setViewportSize({ width: 1440, height: 900 });
   await selectDifficulty(activePage, 'normal');
@@ -1220,6 +1812,53 @@ try {
   await activateWorkspace(activePage, 'prepare');
   await verifyPngAssets(activePage);
 
+  // Invalid legacy data must leave a visible recovery path outside hidden screens.
+  await activePage.route('**/api/state', async route => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    await route.fulfill({ response, json: { ...payload, view: { mode: 'legacy', status: 'playing' } } });
+  }, { times: 1 });
+  await activePage.reload();
+  await activePage.locator('#global-feedback').waitFor({ state: 'visible' });
+  await activePage.waitForFunction(() => /无法读取.*同步进度/.test(document.querySelector('#global-feedback')?.innerText || ''), null, { timeout: 7000 });
+  assert.match(await activePage.locator('#global-feedback').innerText(), /无法读取.*同步进度/);
+  await activePage.locator('#hub-refresh-state').click();
+  await activePage.locator('#hub-screen').waitFor({ state: 'visible' });
+
+  // UI regression: keyboard dismissal and all narrow/intermediate workspaces.
+  await activePage.emulateMedia({ reducedMotion: 'reduce' });
+  await openEquipmentDetails(activePage);
+  const bagSlot = activePage.locator('[data-item-zone="loadout"][data-item-key="bag"]');
+  await bagSlot.focus();
+  await bagSlot.press('Enter');
+  assert.equal(await activePage.locator('#equipment-picker').evaluate(el => el === document.activeElement), true,
+    'opening equipment by keyboard should move focus into the picker');
+  await activePage.locator('#equipment-picker').press('Escape');
+  assert.equal(await activePage.locator('#equipment-picker').isVisible(), false);
+  assert.equal(await bagSlot.evaluate(el => el === document.activeElement), true, 'closing picker restores slot focus');
+  for (const width of [320, 360, 701, 768, 900]) {
+    await activePage.setViewportSize({ width, height: 900 });
+    for (const workspace of ['prepare', 'research', 'inventory', 'shop', 'records']) {
+      await activateWorkspace(activePage, workspace);
+      assert.equal(await activePage.locator('#hub-start-raid').isVisible(), workspace === 'prepare',
+        'the fixed departure bar must only appear on the prepare workspace');
+      assert.equal(await activePage.locator('#hub-stats .stat:visible').count(), 2, 'only the two compact hub statistics remain visible');
+      assert.equal(await activePage.locator('#career-stats').isVisible(), workspace === 'records',
+        'career totals should be available in records without crowding other workspaces');
+      await assertNoNumericProbabilities(activePage);
+      assert.equal(await activePage.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false,
+        `${workspace} should fit the ${width}px viewport`);
+    }
+    await openEquipmentDetails(activePage);
+    await bagSlot.click();
+    assert.equal(await activePage.locator('.picker-browser').evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' ').length), 1,
+      'equipment picker should never nest two cramped columns');
+    assert.equal(await activePage.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false,
+      `open equipment picker should fit the ${width}px viewport`);
+    await activePage.locator('#equipment-picker-close').click();
+  }
+  await activePage.setViewportSize({ width: 1440, height: 900 });
+  await activePage.evaluate(() => window.scrollTo(0, 0));
   await activePage.screenshot({ path: DESKTOP_SHOT, fullPage: true });
   await activePage.setViewportSize({ width: 390, height: 844 });
   assert.equal(await activePage.evaluate(() => document.documentElement.scrollWidth > innerWidth), false,
@@ -1271,24 +1910,36 @@ try {
     if (attempt === 0) await activePage.setViewportSize({ width: 390, height: 844 });
     assert.equal(deployed.view.difficulty.id, 'normal');
     assert.equal(await activePage.locator('#prob-target').count(), 0, 'raid UI should not show a target-only probability');
-    const acquisition = Number.parseFloat((await activePage.locator('#prob-acquisition').innerText()).trim());
-    assert.equal(acquisition, deployed.view.probabilities.acquisition, 'the raid card should display the server acquisition chance');
-    const raidMaterialRows = activePage.locator('#raid-material-probabilities [data-material-id]');
-    assert.equal(await raidMaterialRows.count(), 4, 'the raid should show all natural material probabilities');
-    assert.deepEqual((await raidMaterialRows.evaluateAll(rows => rows.map(row => row.dataset.materialId))).sort(),
-      deployed.view.probabilities.materials.map(item => item.id).sort());
-    const displayedRaidMaterials = await raidMaterialRows.evaluateAll(rows => rows.map(row => ({
-      id: row.dataset.materialId, rate: row.querySelector('strong')?.textContent || '',
-    })));
-    assert.deepEqual(displayedRaidMaterials.map(row => ({ id: row.id, rate: displayedPercent(row.rate) })).sort((a, b) => a.id.localeCompare(b.id)),
-      deployed.view.probabilities.materials.map(row => ({ id: row.id, rate: row.hitProbability })).sort((a, b) => a.id.localeCompare(b.id)),
-    'the in-raid material panel should match the server per-search hit probabilities');
-    for (const id of ['prob-acquisition', 'prob-encounter', 'prob-full', 'prob-partial', 'prob-fail']) {
-      const display = (await activePage.locator(`#${id}`).innerText()).trim();
-      assert.match(display, /^\d+(?:\.\d+)?%$/, `${id} should display a server probability as a percentage`);
-      const amount = Number.parseFloat(display);
-      assert.ok(amount >= 0 && amount <= 100, `${id} should remain within 0–100: ${display}`);
+    await assertRaidOutlooks(activePage, deployed);
+    for (const selector of ['#raid-observations', '#raid-bag-details', '#raid-journal']) {
+      assert.equal(await activePage.locator(selector).evaluate(element => element.open), false,
+        `${selector} should start collapsed in a fresh expedition`);
     }
+    await assertFirstScreenIsConcise(activePage, 'raid');
+    await assertFieldJourney(activePage, deployed, 'fresh-expedition');
+    if (attempt === 0) {
+      await assertSearchApproaches(activePage, deployed);
+      await activePage.evaluate(() => window.scrollTo(0, 0));
+      await activePage.screenshot({ path: path.join(ARTIFACTS, 'ui-v2-raid-mobile.png') });
+      await activePage.screenshot({ path: FIELD_MOBILE_SHOT });
+      await activePage.setViewportSize({ width: 1440, height: 900 });
+      await assertFirstScreenIsConcise(activePage, 'raid');
+      await activePage.screenshot({ path: path.join(ARTIFACTS, 'ui-v2-raid-desktop.png') });
+      await assertFieldJourney(activePage, deployed, 'fresh-expedition-desktop');
+      await activePage.screenshot({ path: FIELD_DESKTOP_SHOT });
+      await activePage.setViewportSize({ width: 390, height: 844 });
+    }
+    const raidMaterialRows = activePage.locator('#raid-material-probabilities [data-material-id]');
+    assert.equal(await raidMaterialRows.count(), 4, 'the expedition should retain all natural material tendencies');
+    await setDisclosure(activePage, '#raid-observations');
+    const displayedRaidMaterials = await raidMaterialRows.evaluateAll(rows => rows.map(row => ({
+      id: row.dataset.materialId, rate: row.querySelector('strong')?.textContent?.trim() || '',
+    })));
+    assert.deepEqual(displayedRaidMaterials.sort((a, b) => a.id.localeCompare(b.id)),
+      deployed.view.probabilities.materials.map(row => ({ id: row.id, rate: expectedMaterial(row.hitProbability) })).sort((a, b) => a.id.localeCompare(b.id)),
+      'expanded expedition materials should describe server per-search chances qualitatively');
+    await assertNoNumericProbabilities(activePage);
+    await setDisclosure(activePage, '#raid-observations', false);
 
     const expedition = await runSearchField(activePage, deployed);
     state = expedition.state;
@@ -1309,7 +1960,10 @@ try {
   finalState = state;
   await activePage.locator(state.phase === 'result' ? '#result-screen' : '#hub-screen')
     .waitFor({ state: 'visible', timeout: 7000 });
-  if (state.phase === 'result') await inspectResultItemCells(activePage);
+  if (state.phase === 'result') {
+    await inspectResultItemCells(activePage);
+    await assertNoNumericProbabilities(activePage);
+  }
   assert.ok(sawEvent, 'the browser path should expose and resolve at least one proposal event');
 
   if (state.phase === 'result') {
@@ -1329,6 +1983,7 @@ try {
   assert.ok(state.hub.research.papers.length >= 1);
   assert.ok(state.hub.research.stage >= 1, 'a real accepted paper should promote the researcher to the master stage');
 
+  await runSearchStyleCommitScenario(browser, game.base, saveDir, pageErrors, externalRequests, responses);
   await runFullBagEventUiScenario(browser, game.base, saveDir, pageErrors, externalRequests, responses);
   await runUncertainMutationScenario(browser, game.base, pageErrors, externalRequests, responses);
   await runEquipmentPickerScenario(browser, game.base, pageErrors, externalRequests, responses);
@@ -1346,8 +2001,12 @@ try {
   assert.deepEqual(externalRequests, [], 'browser resources must remain on the isolated local server');
   assert.deepEqual(imageFailures(responses), [], 'existing PNG image assets should load successfully');
   assert.equal(model.calls.length, 0, 'the probability UI and research loop must not call the AI provider');
-  console.log('Probability browser passed: warehouse capacity/ownership, equipment swaps, uncertain-mutation replay, manual raids and events, paper review/acceptance/promotion, desktop/mobile, and local asset loading.');
+  await fs.writeFile(path.join(ARTIFACTS, 'ui-v2-metrics.json'), JSON.stringify(firstScreenMetrics, null, 2) + '\n');
+  await fs.writeFile(path.join(ARTIFACTS, 'ui-v3-journey-metrics.json'), JSON.stringify(journeyMetrics, null, 2) + '\n');
+  console.log('First-screen text: ' + JSON.stringify(firstScreenMetrics));
+  console.log('Probability browser passed: qualitative forecasts, field-scene decision proximity, accurate resource meters, eight research journey states, reload preservation, progressive disclosure, warehouse capacity/ownership, equipment swaps, uncertain-mutation replay, manual raids and events, paper review/acceptance/promotion, 320px/desktop/mobile, and local asset loading.');
   console.log(`Screenshots: ${path.relative(ROOT, DESKTOP_SHOT)}, ${path.relative(ROOT, MOBILE_SHOT)}, ${path.relative(ROOT, DIFFICULTY_DESKTOP_SHOT)}, ${path.relative(ROOT, DIFFICULTY_MOBILE_SHOT)}, ${path.relative(ROOT, WAREHOUSE_DESKTOP_SHOT)}, ${path.relative(ROOT, WAREHOUSE_MOBILE_SHOT)}, ${path.relative(ROOT, EVENT_DESKTOP_SHOT)}, ${path.relative(ROOT, EVENT_MOBILE_SHOT)}`);
+  console.log(`Intuitive-interface screenshots: ${[RESEARCH_DESKTOP_SHOT, RESEARCH_MOBILE_SHOT, FIELD_DESKTOP_SHOT, FIELD_MOBILE_SHOT, FIELD_EVENT_DESKTOP_SHOT, FIELD_EVENT_MOBILE_SHOT].map(file => path.relative(ROOT, file)).join(', ')}`);
 } catch (error) {
   console.error(`[probability-browser] ${error.stack || error.message}`);
   if (activePage && !activePage.isClosed()) {

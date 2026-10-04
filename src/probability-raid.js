@@ -1,6 +1,7 @@
 import { ITEMS } from './content.js';
 import { GEAR } from './loot-content.js';
 import { DIRECTIONS, skillLevels } from './research.js';
+import { likelihoodLabel, riskLabel, encounterLabel } from '../public/expedition-language.js';
 
 export const PROBABILITY_MODE = 'probability';
 export const PROBABILITY_BASE_WILL = 10;
@@ -40,24 +41,64 @@ export function isProbabilityDifficulty(value) {
 
 const GEAR_HINTS = {
   canvas_pack: { description: '加厚学术帆布包', effects: ['背包容量 +1 格。'] },
-  foam_earplugs: { description: '降噪耳塞', effects: ['人物解释／协商检定 +5 个百分点；与降噪耳机不叠加，不减少正向机会触发率。'] },
+  foam_earplugs: { description: '降噪耳塞', effects: ['交谈时更容易集中注意；与降噪耳机不叠加。'] },
   coffee_thermos: { description: '实验室保温杯', effects: ['心力上限 +0.5。'] },
-  badge_wallet: { description: '证件收纳夹', effects: ['容量加成 +0.5 格；与其他容量加成合计后四舍五入为整格。'] },
-  noise_headphones: { description: '降噪耳机', effects: ['人物解释／协商检定 +5 个百分点；与降噪耳塞不叠加，不减少正向机会触发率。'] },
-  field_recorder: { description: '便携记录仪', effects: ['心力上限 +1；解释方案成功率 +5 个百分点。'] },
-  padded_case: { description: '加厚仪器收纳包', effects: ['容量加成 +1.5 格；与其他容量加成合计后四舍五入为整格。'] },
-  citation_scanner: { description: '文献扫描笔', effects: ['方向情报自然掉落权重 +10%；地点权重乘以 1.10。'] },
-  digital_notebook: { description: '电子实验记录本', effects: ['心力上限 +1；展示依据方案成功率 +5 个百分点。'] },
+  badge_wallet: { description: '证件收纳夹', effects: ['容量加成 +0.5 格；合计后四舍五入。'] },
+  noise_headphones: { description: '降噪耳机', effects: ['交谈时更容易集中注意；与降噪耳塞不叠加。'] },
+  field_recorder: { description: '便携记录仪', effects: ['心力上限 +1；解释方案更有把握。'] },
+  padded_case: { description: '加厚仪器收纳包', effects: ['容量加成 +1.5 格；合计后四舍五入。'] },
+  citation_scanner: { description: '文献扫描笔', effects: ['更容易留意到方向情报。'] },
+  digital_notebook: { description: '电子实验记录本', effects: ['心力上限 +1；展示依据更有把握。'] },
   custom_lab_pack: { description: '课题组定制登山包', effects: ['背包容量 +3 格；心力上限 +1。'] },
-  lightweight_laptop: { description: '轻薄研究本', effects: ['算力卡自然掉落权重 +4%；地点权重乘以 1.04。'] },
-  gpu_workstation: { description: 'GPU 工作站终端', effects: ['算力卡自然掉落权重 +8%；地点权重乘以 1.08。'] },
-  remote_terminal: { description: '集群远程终端', effects: ['算力卡自然掉落权重 +12%；地点权重乘以 1.12。'] },
-  literature_assistant: { description: '文献助手终端', effects: ['数据包自然掉落权重 +8%；人物举证检定 +5 个百分点。'] },
-  experiment_tracker: { description: '实验追踪器', effects: ['源码自然掉落权重 +8%；人物举证检定 +5 个百分点。'] },
-  data_cleaner: { description: '数据清洗工具', effects: ['数据包自然掉落权重 +8%；地点权重乘以 1.08。'] },
+  lightweight_laptop: { description: '轻薄研究本', effects: ['稍容易找到算力卡。'] },
+  gpu_workstation: { description: 'GPU 工作站终端', effects: ['更容易找到算力卡。'] },
+  remote_terminal: { description: '集群远程终端', effects: ['寻找算力卡时更得心应手。'] },
+  literature_assistant: { description: '文献助手终端', effects: ['更容易找到数据包；展示依据更有把握。'] },
+  experiment_tracker: { description: '实验追踪器', effects: ['更容易找到源码；展示依据更有把握。'] },
+  data_cleaner: { description: '数据清洗工具', effects: ['更容易找到可用数据包。'] },
   portable_ssd: { description: '移动数据盘', effects: ['背包容量 +1 格。'] },
-  encrypted_ssd: { description: '加密 SSD', effects: ['容量加成 +0.5 格，与其他容量加成合计后四舍五入；撤离失败率 −4 个百分点。'] },
-  backup_device: { description: '研究备份设备', effects: ['可指定 1 件研究材料保护；完整、部分或失败结算时保留。'] },
+  encrypted_ssd: { description: '加密 SSD', effects: ['容量加成 +0.5 格，合计后四舍五入；撤离时更稳妥。'] },
+  backup_device: { description: '研究备份设备', effects: ['可指定 1 件研究材料保护；任何撤离结果都能保留。'] },
+};
+
+// Conditions last for a short stretch of the expedition, rather than rerolling
+// independent bonuses on every view/search. IDs, never client-supplied numbers,
+// select the bounded rules. Absent or unknown legacy fields remain neutral.
+const FIELD_CONDITIONS = {
+  arrival: { name: '公开交流区', description: '先熟悉现场，沿常规路线寻找材料。',
+    acquisition: 0, encounter: 0, risk: 0, partial: 0, fail: 0 },
+  exchange: { name: '热闹交换区', description: '材料与合作机会不少，人多也更容易引起注意。',
+    acquisition: 6, encounter: 10, risk: 2, partial: 2, fail: 0,
+    materials: { dataset: 1.2, src_code: 1.15 }, events: { npc: 2, resource: 2 } },
+  sidepath: { name: '安静侧廊', description: '资料较零散，绕行却能避开人群，返程更从容。',
+    acquisition: -4, encounter: -10, risk: -2, partial: -2, fail: -1,
+    materials: { wind: 1.4 }, events: { npc: 0.8, resource: 0.7, route: 2 } },
+  lab: { name: '开放演示间', description: '算力和源码线索丰富，繁忙终端偶尔会出故障。',
+    acquisition: 8, encounter: 5, risk: 2, partial: 0, fail: 2,
+    materials: { compute: 1.4, src_code: 1.2 }, events: { technical: 2.5, resource: 1.5 } },
+  checkpoint: { name: '临时核查区', description: '进出登记变严，搜寻和返程都需要更谨慎。',
+    acquisition: -5, encounter: 12, risk: 3, partial: 4, fail: 1,
+    events: { route: 2.5, npc: 1.5 } },
+  archive: { name: '资料整理区', description: '数据与源码集中在这里，仔细核验才能安心带走。',
+    acquisition: 5, encounter: -4, risk: 1, partial: -1, fail: 0,
+    materials: { dataset: 1.3, src_code: 1.3 }, events: { technical: 1.8, resource: 1.5 } },
+};
+const APPROACHES = {
+  cautious: { name: '谨慎摸排', hint: '收获少些，遇事更从容，也更靠近出口。',
+    acquisition: -10, encounter: -8, risk: -3, extra: -5, depth: -1, check: 3 },
+  steady: { name: '常规搜索', hint: '兼顾收获和返程，按当前路线探索。',
+    acquisition: 0, encounter: 0, risk: 0, extra: 0, depth: 0, check: 0 },
+  deep: { name: '深入搜寻', hint: '机会更多，处理波折和返程也更吃力。',
+    acquisition: 10, encounter: 10, risk: 4, extra: 10, depth: 1, check: -3 },
+};
+const MOMENTUM = {
+  contact: { name: '熟人指路', description: '有人帮你辨认线索，搜寻与返程更顺利。', acquisition: 6, encounter: -4, risk: -1, partial: -2 },
+  scrutiny: { name: '受到关注', description: '刚才的交流引来注意，接下来更容易遇到追问。', encounter: 6, risk: 3, check: -4 },
+  lead: { name: '新线索', description: '刚得到的线索让接下来的搜寻更有收获。', acquisition: 8, extra: 5 },
+  interference: { name: '线索受阻', description: '现场问题尚未解决，接下来的搜寻会更费力。', acquisition: -6, risk: 3, check: -3 },
+  repaired: { name: '终端恢复', description: '设备恢复工作，搜寻和技术处理都更顺手。', acquisition: 5, risk: -2, check: 5 },
+  clear: { name: '返程畅通', description: '刚打通的路线让这段探索与返程更稳妥。', risk: -2, partial: -4, fail: -2 },
+  detour: { name: '被迫绕行', description: '出口附近仍有阻碍，返程需要多留余地。', risk: 2, partial: 4, fail: 2 },
 };
 
 const EQUIPMENT_SLOTS = ['bag', 'focus', 'tool', 'device', 'storage'];
@@ -474,7 +515,7 @@ function materialWeights(run) {
   const bonuses = loadBonuses(run).collection;
   return Object.fromEntries(MATERIAL_IDS.map(id => {
     const bonus = clamp(bonuses[id] || 0, 0, MAX_MATERIAL_WEIGHT_BONUS);
-    return [id, Math.max(0, Number(base[id]) || 0) * (1 + bonus / 100)];
+    return [id, Math.max(0, Number(base[id]) || 0) * (1 + bonus / 100) * (contextModifiers(run).condition.materials?.[id] || 1)];
   }));
 }
 
@@ -482,9 +523,9 @@ function materialWeightBonus(run, id) {
   return round1(clamp(loadBonuses(run).collection[id] || 0, 0, MAX_MATERIAL_WEIGHT_BONUS));
 }
 
-function extraDropChance(run) {
+function extraDropChance(run, approachId = 'steady') {
   const base = Math.max(0, Number(venueFor(run).extraDrop) || 0) * 100;
-  return round1(clamp(base + difficultyFor(run).extraDropModifier, 0, 100));
+  return round1(clamp(base + difficultyFor(run).extraDropModifier + contextModifiers(run, approachId).extra, 0, 100));
 }
 
 function evidenceSet(run) {
@@ -507,45 +548,48 @@ function eventPool(run) {
   return EVENT_TEMPLATES.filter(event => !used.has(event.id));
 }
 
-function encounterStatus(run, riskAfter) {
+function encounterStatus(run, riskAfter, approachId = 'steady') {
   if (run.event) return { chance: 0, reason: '先处理当前人物事件。' };
   if (Number(run.stats?.will) <= 1) return { chance: 0, reason: '这次搜索会用尽心力，之后自动撤离。' };
   const eventsLimit = 4;
   if ((run.eventCount || 0) >= eventsLimit) return { chance: 0, reason: `本局事件已达 ${eventsLimit} 次上限。` };
   if (run.encounterCooldown) return { chance: 0, reason: '上次交涉后的下一次搜索免交涉。' };
   if (!eventPool(run).length) return { chance: 0, reason: '本局可触发的人物事件已用完。' };
-  const base = 10 + venueFor(run).baseRisk + 0.5 * riskAfter;
+  const base = 10 + venueFor(run).baseRisk + 0.5 * riskAfter + contextModifiers(run, approachId).encounter;
   const pacing = run.encounterPacing || { dryStreak: 0, firstEventSeen: false };
   const dryStreak = Math.max(0, Number(pacing.dryStreak) || 0);
   const firstEventSeen = pacing.firstEventSeen === true;
   if (!firstEventSeen && dryStreak >= 1) {
-    return { chance: 100, reason: '首轮未触发事件；为保证前两次有效搜索有关键选择，本次触发率为 100%。', guaranteed: true };
+    return { chance: 100, reason: '附近传来动静，继续搜索就会遇到一个新情况。', guaranteed: true };
   }
   if (firstEventSeen && dryStreak >= 3) {
-    return { chance: 100, reason: '已连续 3 次有效搜索没有事件；本次触发率为 100%。', guaranteed: true };
+    return { chance: 100, reason: '已连续 3 次搜索没有事件，前方的新情况已无法避开。', guaranteed: true };
   }
   const pacingBonus = firstEventSeen ? dryStreak * 15 : 0;
   const upper = 80;
   return { chance: round1(clamp(base + pacingBonus, 5, upper)),
-    reason: firstEventSeen ? `基础事件率 + 连续 ${dryStreak} 次未触发修正。` : '首两次有效搜索内保证触发一次；当前显示为本次实际事件率。',
+    reason: firstEventSeen ? (dryStreak ? '平静了一阵，周围的动静正在增多。' : '留意周围的交流与现场变化。') : '刚进入现场，接下来的探索会遇到新的情况。',
     pacingBonus, guaranteed: false };
 }
 
-function acquisitionChance(run) {
+function acquisitionChance(run, approachId = 'steady') {
   const difficulty = difficultyFor(run);
   const researchBonus = 4 * (skill(run, 'research') - 1);
-  const base = 65 + researchBonus + difficulty.acquisitionModifier - venueFor(run).difficulty;
+  const context = contextModifiers(run, approachId).acquisition;
+  const base = 65 + researchBonus + difficulty.acquisitionModifier - venueFor(run).difficulty + context;
   return {
     chance: round1(clamp(base, 30, 95)),
     gear: 0,
+    context,
     researchBonus,
     acquisitionModifier: difficulty.acquisitionModifier,
     difficulty: venueFor(run).difficulty,
   };
 }
 
-function searchRiskAfter(run) {
-  const result = Number(run.stats?.risk) + venueFor(run).growth + difficultyFor(run).riskModifier;
+function searchRiskAfter(run, approachId = 'steady') {
+  const growth = Math.max(1, venueFor(run).growth + difficultyFor(run).riskModifier + contextModifiers(run, approachId).risk);
+  const result = Number(run.stats?.risk) + growth;
   return round1(clamp(result, 0, 100));
 }
 
@@ -556,8 +600,9 @@ function exitProbabilities(run) {
   const skillExpression = skillBonus(skill(run, 'expression'), 2, 8);
   const loadPenalty = bagWeight(run) >= capacityFor(run) * 0.8 ? 4 : 0;
   const gear = loadBonuses(run);
-  const fail = round1(clamp(0.4 * v.baseRisk + 0.15 * risk + loadPenalty - skillEngineering - gear.storage, 1, 25));
-  const partial = round1(clamp(8 + 0.2 * risk - skillExpression - (run.support || 0), 5, 35));
+  const context = contextModifiers(run);
+  const fail = round1(clamp(0.4 * v.baseRisk + 0.15 * risk + loadPenalty - skillEngineering - gear.storage + context.fail, 1, 25));
+  const partial = round1(clamp(8 + 0.2 * risk - skillExpression - (run.support || 0) + context.partial, 5, 35));
   const full = round1(100 - fail - partial);
   return {
     full, partial, fail,
@@ -569,15 +614,18 @@ function exitProbabilities(run) {
       storageBonus: gear.storage,
       expressionBonus: skillExpression,
       support: run.support || 0,
+      contextFail: context.fail,
+      contextPartial: context.partial,
+      depth: context.state.depth,
       sum: round1(full + partial + fail),
     },
   };
 }
 
-function materialProbabilities(run, acquisition) {
+function materialProbabilities(run, acquisition, approachId = 'steady') {
   const weights = materialWeights(run);
   const total = Object.values(weights).reduce((sum, value) => sum + value, 0);
-  const extra = extraDropChance(run) / 100;
+  const extra = extraDropChance(run, approachId) / 100;
   return MATERIAL_IDS.map(id => {
     const weight = Math.max(0, Number(weights[id]) || 0);
     const conditional = total > 0 ? weight / total : 0;
@@ -593,13 +641,13 @@ function materialProbabilities(run, acquisition) {
   });
 }
 
-function computeProbabilities(run) {
-  const acquisition = acquisitionChance(run);
-  const riskAfterSearch = searchRiskAfter(run);
-  const encounter = encounterStatus(run, riskAfterSearch);
-  const materials = materialProbabilities(run, acquisition.chance / 100);
+function computeProbabilities(run, approachId = 'steady') {
+  const acquisition = acquisitionChance(run, approachId);
+  const riskAfterSearch = searchRiskAfter(run, approachId);
+  const encounter = encounterStatus(run, riskAfterSearch, approachId);
+  const materials = materialProbabilities(run, acquisition.chance / 100, approachId);
   const extraction = exitProbabilities(run);
-  const extraDrop = extraDropChance(run);
+  const extraDrop = extraDropChance(run, approachId);
   const v = venueFor(run);
   const d = difficultyFor(run);
   return {
@@ -615,6 +663,7 @@ function computeProbabilities(run) {
       acquisition: {
         base: 65,
         researchBonus: acquisition.researchBonus,
+        contextModifier: acquisition.context,
         difficultyModifier: d.acquisitionModifier,
         venueDifficulty: v.difficulty,
         riskAfterSearch,
@@ -626,6 +675,7 @@ function computeProbabilities(run) {
         riskContribution: round1(riskAfterSearch * 0.5),
         difficultyModifier: difficultyFor(run).eventModifier,
         pacingBonus: encounter.pacingBonus || 0,
+        contextModifier: contextModifiers(run, approachId).encounter,
         guaranteed: encounter.guaranteed === true,
         reason: encounter.reason,
       },
@@ -662,6 +712,81 @@ function log(run, type, text) {
 
 function safeId(value, allowed, fallback) {
   return typeof value === 'string' && allowed.includes(value) ? value : fallback;
+}
+
+function expeditionState(run) {
+  const state = run.expedition || {};
+  const effectId = safeId(state.effect?.id, Object.keys(MOMENTUM), null);
+  const remainingSearches = Math.floor(clamp(state.effect?.remainingSearches, 0, 2));
+  return {
+    conditionId: safeId(state.conditionId, Object.keys(FIELD_CONDITIONS), 'arrival'),
+    searchesInCondition: Math.floor(clamp(state.searchesInCondition, 0, 1)),
+    depth: Math.floor(clamp(state.depth, 0, 4)),
+    lastApproach: safeId(state.lastApproach, Object.keys(APPROACHES), 'steady'),
+    effect: effectId && remainingSearches > 0 ? { id: effectId, remainingSearches } : null,
+  };
+}
+
+function contextModifiers(run, approachId = 'steady') {
+  const state = expeditionState(run);
+  const condition = FIELD_CONDITIONS[state.conditionId];
+  const effect = state.effect ? MOMENTUM[state.effect.id] : {};
+  const approach = APPROACHES[safeId(approachId, Object.keys(APPROACHES), 'steady')];
+  const total = key => (condition[key] || 0) + (effect[key] || 0) + (approach[key] || 0);
+  return { state, condition, effect, approach, acquisition: total('acquisition'), encounter: total('encounter'),
+    risk: total('risk'), extra: total('extra'), check: total('check'),
+    partial: (condition.partial || 0) + (effect.partial || 0) + state.depth * 2,
+    fail: (condition.fail || 0) + (effect.fail || 0) + state.depth * 1.25 };
+}
+
+function outlookFor(probabilities, risk = probabilities.parts?.acquisition?.riskAfterSearch) {
+  return { acquisition: likelihoodLabel(probabilities.acquisition), encounter: encounterLabel(probabilities.encounter),
+    extraction: likelihoodLabel(probabilities.full), risk: riskLabel(risk) };
+}
+
+function eventMomentum(event, success) {
+  return ({ npc: ['scrutiny', 'contact'], resource: ['interference', 'lead'],
+    technical: ['interference', 'repaired'], route: ['detour', 'clear'] })[event.type]?.[Number(success)] || null;
+}
+
+function advanceExpedition(run, approachId) {
+  const state = expeditionState(run);
+  state.lastApproach = approachId;
+  state.depth = clamp(state.depth + APPROACHES[approachId].depth, 0, 4);
+  if (state.effect && --state.effect.remainingSearches <= 0) state.effect = null;
+  state.searchesInCondition += 1;
+  if (state.searchesInCondition >= 2) {
+    const candidates = Object.keys(FIELD_CONDITIONS).filter(id => id !== 'arrival' && id !== state.conditionId);
+    // A single seeded transition per completed stretch. Read-only previews never
+    // advance it, and the next stretch cannot silently repeat the previous one.
+    state.conditionId = candidates[Math.floor(nextRandom(run) * candidates.length)];
+    state.searchesInCondition = 0;
+    log(run, 'route', `来到${FIELD_CONDITIONS[state.conditionId].name}。${FIELD_CONDITIONS[state.conditionId].description}`);
+  }
+  run.expedition = state;
+}
+
+function expeditionView(run) {
+  const state = expeditionState(run);
+  const condition = FIELD_CONDITIONS[state.conditionId];
+  const blocked = run.status !== 'playing' || !!run.event || !!run.pendingLoot?.length || !!run.pendingAutoExtract || Number(run.stats?.will) < 1;
+  const reason = run.status !== 'playing' ? '本次远征已经结束。' : run.event ? '先处理当前事件。'
+    : run.pendingLoot?.length ? '先整理刚发现的物品。' : blocked ? '心力不足，不能继续搜索。' : '';
+  return {
+    condition: { id: state.conditionId, name: condition.name, description: condition.description },
+    depthLabel: state.depth === 0 ? '靠近出口' : state.depth <= 2 ? '已入内场' : '深入腹地',
+    recentEffect: state.effect ? { name: MOMENTUM[state.effect.id].name, description: MOMENTUM[state.effect.id].description,
+      remainingSearches: state.effect.remainingSearches } : null,
+    approaches: Object.entries(APPROACHES).map(([id, approach]) => {
+      const probabilities = computeProbabilities(run, id);
+      const riskAfter = probabilities.parts.acquisition.riskAfterSearch;
+      return { id, actionId: id === 'steady' ? 'search' : `search:${id}`, name: approach.name, hint: approach.hint,
+        disabled: blocked, reason, outlook: outlookFor(probabilities),
+        searchPreview: { willCost: 1, riskBefore: round1(run.stats?.risk), riskAfter,
+          riskDelta: round1(riskAfter - (Number(run.stats?.risk) || 0)), acquisition: probabilities.acquisition,
+          encounter: probabilities.encounter, extraDrop: probabilities.extraDrop } };
+    }),
+  };
 }
 
 export function createProbabilityRaid(options = {}) {
@@ -713,6 +838,7 @@ export function createProbabilityRaid(options = {}) {
     probabilityVersion: 3,
     encounterPacing: { eligibleSearches: 0, dryStreak: 0, firstEventSeen: false },
     lastAction: null,
+    expedition: { conditionId: 'arrival', searchesInCondition: 0, depth: 0, lastApproach: 'steady', effect: null },
   };
   const startText = `开始${VENUES[venueId].name}远征，${DIFFICULTIES[difficultyId].name}难度；材料按地点自然分布。`;
   log(run, 'system', `${startText}出行费已在出发时扣除。`);
@@ -825,7 +951,7 @@ function eventChoiceProbability(run, choice) {
   const difficulty = eventDifficulty(run) + (Number(run.event?.difficulty) || 0) + (Number(check.difficulty) || 0);
   const difficultyModifier = difficultyFor(run).eventModifier;
   return round1(clamp((Number(check.base) || 0) + ability + evidenceBonus + gear + communication + trust
-    + difficultyModifier - riskPenalty - difficulty, 20, 95));
+    + difficultyModifier + contextModifiers(run, expeditionState(run).lastApproach).check - riskPenalty - difficulty, 20, 95));
 }
 
 function choiceEffect(choice, outcome) {
@@ -875,9 +1001,7 @@ function effectSummary(run, event, choice, effect = {}, fallback = "") {
   const supportBefore = Number(projected.support) || 0;
   const supportAfter = effect.support == null ? supportBefore : Math.max(supportBefore, Number(effect.support) >= 8 ? 8 : 0);
   if (supportAfter > supportBefore) {
-    const partialBefore = exitProbabilities({ ...projected, support: supportBefore }).partial;
-    const partialAfter = exitProbabilities({ ...projected, support: supportAfter }).partial;
-    actuals.push("接应支持 +" + round1(supportAfter - supportBefore) + "（部分带回率 " + partialBefore + "%→" + partialAfter + "%）");
+    actuals.push("接应就绪，返程更稳妥");
   }
   projected.support = supportAfter;
 
@@ -906,17 +1030,21 @@ function eventAction(run, choice) {
   const reason = choice.exit && run.pendingLoot?.length ? '先整理本轮发现，再选择撤离。' : requirementsReason(run, choice);
   const probability = eventChoiceProbability(run, choice);
   const event = run.event;
-  const success = effectSummary(run, event, choice, choiceEffect(choice, 'success'), '行动成功。');
+  const successMomentum = !choice.exit && eventMomentum(event, true);
+  const failureMomentum = !choice.exit && eventMomentum(event, false);
+  const success = effectSummary(run, event, choice, choiceEffect(choice, 'success'), '行动成功。')
+    + (successMomentum ? ` 后续两次搜索：${MOMENTUM[successMomentum].name}。${MOMENTUM[successMomentum].description}` : '');
   const failure = choice.check
     ? effectSummary(run, event, choice, choiceEffect(choice, 'failure'), '检定未通过。')
-    : '无检定；该方案按 100% 成功结算。';
+      + (failureMomentum ? ` 后续两次搜索：${MOMENTUM[failureMomentum].name}。${MOMENTUM[failureMomentum].description}` : '')
+    : '无需检定，满足条件即可完成。';
   const exitRiskDelta = round1(clamp((Number(run.stats?.risk) || 0) + (Number(choiceEffect(choice, 'success').riskDelta) || 0), 0, 100) - clamp(run.stats?.risk, 0, 100));
   const action = {
     id: `event:${choice.key}`,
     name: choice.name,
     disabled: !!reason,
     reason,
-    ...(!choice.exit ? { probability } : {}),
+    ...(!choice.exit ? { probability, outlook: likelihoodLabel(probability) } : {}),
     cost: choice.exit ? `风险 +${exitRiskDelta} 后立即撤离` : choiceCostText(choice),
     success,
     failure,
@@ -929,6 +1057,7 @@ function eventAction(run, choice) {
     const support = Math.max(Number(run.support) || 0, rawSupport >= 8 ? 8 : 0);
     const after = exitProbabilities({ ...run, stats: { ...run.stats, risk }, support });
     action.exitProbabilities = { full: after.full, partial: after.partial, fail: after.fail };
+    action.outlook = likelihoodLabel(after.full);
   }
   return action;
 }
@@ -1020,6 +1149,9 @@ function resolveEvent(run, id) {
   if (event.type === 'npc' && choice.xp !== false) run.history.push(`npc:reply:${event.id}`);
   run.event = null;
   run.encounterCooldown = true;
+  const momentumId = eventMomentum(event, success);
+  run.expedition = expeditionState(run);
+  if (momentumId) run.expedition.effect = { id: momentumId, remainingSearches: 2 };
   const description = success ? publicAction.success : publicAction.failure;
   log(run, 'event', `${description}${consumed.length ? ` 消耗了${consumed.map(itemName).join('、')}。` : ''}`);
   if (run.stats.will <= 0) {
@@ -1097,7 +1229,14 @@ function actionView(run) {
     riskDelta: searchAction.riskDelta,
     acquisition: next.acquisition,
     encounter: next.encounter,
+    extraDrop: next.extraDrop,
   };
+  searchAction.outlook = outlookFor(next);
+  for (const approach of expeditionView(run).approaches.filter(row => row.id !== 'steady')) {
+    actions.push({ id: approach.actionId, name: approach.name, kind: 'search', disabled: searchDisabled, reason: searchReason,
+      probability: approach.searchPreview.acquisition, riskDelta: approach.searchPreview.riskDelta,
+      cost: `心力 −1；风险 +${approach.searchPreview.riskDelta}`, outlook: approach.outlook, searchPreview: approach.searchPreview });
+  }
   const extractDisabled = pending || hasPending || auto;
   const extractReason = pending ? '先回应人物事件，或选择结束交流并撤离。'
     : hasPending ? '先处理刚发现的物品。' : auto ? '心力已耗尽，正在自动撤离。' : '';
@@ -1181,6 +1320,8 @@ export function probabilityRaidView(run) {
     bagCap: Math.max(0, Number(run.bagCap) || PROBABILITY_BASE_BAG_CAP),
     bagUsed: round1(bagWeight(run)),
     probabilities,
+    outlook: outlookFor(probabilities, run.stats?.risk),
+    expedition: expeditionView(run),
     encounterPacing: eventPacingView(run, probabilities),
     lastAction: run.lastAction ? clone(run.lastAction) : null,
     event: eventView(run),
@@ -1234,7 +1375,10 @@ function rollPercent(run, percent) {
 function chooseEvent(run) {
   const pool = eventPool(run);
   if (!pool.length) return null;
-  const event = pool[Math.floor(nextRandom(run) * pool.length)];
+  const weights = contextModifiers(run).condition.events || {};
+  const total = pool.reduce((sum, event) => sum + (weights[event.type] || 1), 0);
+  let draw = nextRandom(run) * total;
+  const event = pool.find(candidate => { draw -= weights[candidate.type] || 1; return draw < 0; }) || pool.at(-1);
   const contact = run.contacts?.[event.npcId] || {};
   const chosen = {
     ...event,
@@ -1299,7 +1443,7 @@ function finishExtraction(run, automatic = false) {
   run.pendingLoot = [];
   run.pendingAutoExtract = false;
   run.event = null;
-  log(run, 'result', `${run.result.summary} 撤离结果：完整 ${probabilities.full}% / 部分 ${probabilities.partial}% / 失败 ${probabilities.fail}%。`);
+  log(run, 'result', run.result.summary);
   return true;
 }
 
@@ -1315,12 +1459,13 @@ function removeBagItem(run, index) {
   return id;
 }
 
-function performSearch(run) {
-  const preview = computeProbabilities(run);
+function performSearch(run, approachId = 'steady') {
+  const preview = computeProbabilities(run, approachId);
+  run.encounterPacing ||= { eligibleSearches: 0, dryStreak: 0, firstEventSeen: (Number(run.eventCount) || 0) > 0 };
   const riskBefore = Number(run.stats.risk) || 0;
   const willBefore = Number(run.stats.will);
   run.stats.will = round1(Math.max(0, willBefore - 1));
-  run.stats.risk = searchRiskAfter(run);
+  run.stats.risk = searchRiskAfter(run, approachId);
   run.history.push('container:search:probability');
 
   const found = rollPercent(run, preview.acquisition);
@@ -1328,7 +1473,7 @@ function performSearch(run) {
   if (found) {
     const first = weightedItem(run);
     if (first) loot.push(first);
-    const extraChance = extraDropChance(run);
+    const extraChance = extraDropChance(run, approachId);
     if (first && extraChance > 0 && rollPercent(run, extraChance)) {
       const extra = weightedItem(run);
       if (extra) loot.push(extra);
@@ -1370,7 +1515,8 @@ function performSearch(run) {
     ? `搜索成功，发现${loot.map(itemName).join('、') || '研究材料'}。`
     : '这次没有找到材料。';
   const cooldownText = hadCooldown ? ' 本次搜索享受一次交涉冷却。' : '';
-  log(run, 'search', `${resultText} 心力 −1，风险 ${riskBefore}→${run.stats.risk}。材料概率 ${preview.acquisition}%，交涉触发率 ${encounterChance}%。${eventText}${cooldownText}`);
+  log(run, 'search', `${APPROACHES[approachId].name}：${resultText} 心力 −1，处境${riskLabel(run.stats.risk)}。${eventText}${cooldownText}`);
+  advanceExpedition(run, approachId);
   if (run.stats.will <= 0) {
     run.pendingAutoExtract = true;
     if (!run.pendingLoot.length && !run.event) finishExtraction(run, true);
@@ -1400,12 +1546,13 @@ export function actProbabilityRaid(run, action) {
     return { ...committed, eventSuccess: result.eventSuccess, endsRaid: result.endsRaid, automatic: run.status === 'ended' };
   }
 
-  if (id === 'search') {
+  if (id === 'search' || id === 'search:cautious' || id === 'search:deep') {
     if (run.event) return responseFailure('先处理当前人物事件。');
     if (run.pendingLoot.length) return responseFailure('先决定如何处理刚发现的物品。');
     if (run.pendingAutoExtract) return responseFailure('心力已耗尽，正在自动撤离。');
     if (run.stats.will < 1) return responseFailure('心力不足，不能继续搜索。');
-    const outcome = performSearch(run);
+    const approachId = id === 'search' ? 'steady' : id.slice('search:'.length);
+    const outcome = performSearch(run, approachId);
     const committed = commitAction(run, '', 'search', before, {
       title: outcome.found ? '搜索发现' : '搜索结果',
       text: outcome.text,

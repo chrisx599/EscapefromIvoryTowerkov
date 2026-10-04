@@ -11,3 +11,6 @@ Thumbs.db
 .env.*
 .env *
 !.env.example
+
+.browser-cache/
+.preview-saves/

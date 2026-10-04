@@ -3,19 +3,25 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#eef3ef">
+  <meta name="theme-color" content="#173e37">
   <meta name="application-name" content="逃离象牙塔夫">
   <meta name="description" content="逃离象牙塔夫 / Escape from Ivory Towerkov：科研题材的概率搜打撤与生涯游戏。">
   <title>逃离象牙塔夫 | Escape from Ivory Towerkov</title>
   <link rel="stylesheet" href="/probability.css">
+  <link rel="stylesheet" href="/field-station.css">
+  <link rel="stylesheet" href="/field-scene.css">
+  <link rel="stylesheet" href="/research-workbench.css">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 </head>
 <body>
+  <a class="skip-link" href="#game-area-title">跳到游戏内容</a>
   <header>
     <div class="brand"><div class="brand-mark" aria-hidden="true">塔</div><div><h1>逃离象牙塔夫</h1><p>Escape from Ivory Towerkov</p></div></div>
-    <div class="header-right"><span class="badge">自动保存</span><button class="button small" id="hub-refresh-state" type="button">同步进度</button></div>
+    <div class="header-right"><span class="badge">进度自动保存</span><button class="button small" id="hub-refresh-state" type="button">同步进度</button></div>
   </header>
   <main>
-    <div class="top-notice"><strong>课题缺少数据、源码或算力？</strong> 选择地点与难度，带回材料开展实验，逐步完成论文与晋升。进度会自动保存。</div>
+    <details class="top-notice"><summary>怎么玩？</summary><p>查看课题缺口 → 选择地点与难度 → 搜索与应对事件 → 及时撤离 → 实验、论文与晋升。只有点击行动才会推进远征，阅读和刷新不会消耗心力。</p></details>
+    <div class="station-heading">
     <nav id="game-phase-nav" class="game-phase-nav" aria-label="远征进度">
       <div class="phase-marker" data-game-phase="hub" aria-current="step"><span>01</span><b>工位</b></div>
       <div class="phase-connector" aria-hidden="true"></div>
@@ -25,7 +31,8 @@
     </nav>
     <div class="game-area-heading">
       <div class="area-mark" aria-hidden="true"></div>
-      <div><span class="area-kicker">当前区域</span><h2 id="game-area-title" tabindex="-1">备战工位</h2><p id="game-area-description">检查课题缺口，准备装备并选择地点与难度。</p></div>
+      <div><h2 id="game-area-title" tabindex="-1">备战工位</h2><p id="game-area-description">检查课题缺口，准备装备并选择地点与难度。</p></div>
+    </div>
     </div>
     <div id="global-feedback" class="message hidden" role="status" aria-live="polite"></div>
     <section id="hub-screen" class="screen hidden">
@@ -40,25 +47,22 @@
       <div id="hub-feedback" class="message hidden" role="status" aria-live="polite"></div>
 
       <section id="workspace-panel-prepare" class="workspace-panel workspace-prepare" data-workspace-panel="prepare" role="tabpanel" aria-labelledby="workspace-tab-prepare">
-        <div class="workspace-title"><span class="workspace-number">01</span><div><span class="eyebrow">出发前</span><h2>备战 · 准备本次远征</h2><p>确认课题缺口、目的地、难度和随身装备，再由研究者亲自出发。</p></div></div>
+
         <div class="prepare-workspace-grid">
           <section class="card" id="expedition-setup">
-            <div class="card-head setup-card-head"><div><div class="eyebrow">本次远征</div><h2>地点与难度</h2><span class="pill setup-self-pill">研究者亲自出发</span></div><button class="button primary launch-button" id="hub-start-raid" type="button">按当前配置出发</button></div>
-            <p class="subtle">地点决定自然材料池，难度决定本局收益与挑战。</p>
-            <div id="setup-gap" class="notice-box"></div>
+
+            <div class="objective-brief"><div class="objective-label">这次找什么</div><div id="setup-gap" class="notice-box"></div><button type="button" class="text-button" data-open-workspace="research">查看课题</button></div>
             <div class="field"><label for="setup-venue">目的地</label><select id="setup-venue" class="select"></select></div>
-            <div class="setup-scene"><img id="setup-venue-art" src="/assets/generated/poster-board.png" alt="学术交流展示板" decoding="async"><span><strong id="setup-venue-scene-name">学术交流</strong><small>前往地点后开始搜打撤</small></span></div>
+            <div class="setup-scene"><img id="setup-venue-art" src="/assets/generated/poster-board.png" alt="学术交流展示板" decoding="async"><span><strong id="setup-venue-scene-name">学术交流</strong><small id="setup-venue-caption">寻找下一份研究材料</small></span></div>
             <div class="difficulty-heading"><div><label>远征难度</label><p id="setup-difficulty-description">选择难度后查看本局影响。</p></div></div>
             <div id="setup-difficulty-options" class="difficulty-options" role="group" aria-label="远征难度"></div>
             <div id="setup-difficulty-preview" class="difficulty-preview" aria-live="polite">查看材料发现机会、本次挑战和出发时的撤离把握。</div>
-            <details id="setup-difficulty-details" class="difficulty-details"><summary>查看详细概率</summary><div id="setup-difficulty-numbers" class="difficulty-numbers"></div></details>
-            <details id="setup-material-details" class="material-details"><summary>查看地点材料分布</summary><div id="setup-material-pool" class="material-pool" aria-label="搜获成功后的地点材料类别比例"></div></details>
-            <div id="setup-reason" class="meta"></div>
-            <details class="gear-hints-wrap"><summary>查看当前装备加成</summary><div id="setup-gear-hints" class="gear-hints-grid"></div></details>
+            <details id="setup-detail-panel" class="disclosure"><summary>地点与装备提示</summary><div class="disclosure-content"><p class="tiny">材料倾向会随地点、装备和现场情况变化。</p><div id="setup-material-pool" class="material-pool" aria-label="地点材料倾向"></div><div id="setup-gear-hints" class="gear-hints-grid"></div></div></details>
+            <div class="launch-dock"><div><span class="eyebrow">配置就绪后出发</span><p id="launch-summary">确认装备、难度与目的地</p><div id="setup-reason" class="disabled-reason"></div></div><button class="button primary launch-button" id="hub-start-raid" type="button">开始远征</button></div>
           </section>
           <div class="prepare-support">
-            <section class="card equipment-card">
-              <div class="card-head"><div><div class="eyebrow">出发装备</div><h2>装备与随身补给</h2></div><span id="loadout-count" class="pill"></span></div>
+            <details id="equipment-details" class="card equipment-card disclosure"><summary>装备与补给<span id="equipment-summary" class="foldout-summary"></span></summary><div class="disclosure-content">
+              <div class="card-head"><div><div class="eyebrow">出发装备</div><h2>整理你的行囊</h2></div><span id="loadout-count" class="pill"></span></div>
               <div class="item-browser item-browser-compact"><div id="hub-loadout" class="grid item-grid"></div><aside id="loadout-item-detail" class="item-detail compact-detail" role="region" aria-label="装备详情" aria-live="polite">选择物品查看详情。</aside></div>
               <p class="equip-picker-hint">点击一个槽位，选择已有装备或购买同类新装备。</p>
               <section id="equipment-picker" class="equipment-picker hidden" tabindex="-1" aria-label="选择出发装备">
@@ -75,11 +79,11 @@
               </section>
               <div class="divider"></div>
               <div class="row"><h3>预留补给</h3><span id="supply-count" class="tiny"></span></div><div class="item-browser item-browser-compact"><div id="hub-supplies" class="grid item-grid"></div><aside id="supplies-item-detail" class="item-detail compact-detail" role="region" aria-label="补给详情" aria-live="polite">选择物品查看详情。</aside></div>
-            </section>
-            <section class="card venue-card">
-              <div class="card-head"><div><div class="eyebrow">可前往地点</div><h2>研究与交流网络</h2></div></div>
+            </div></details>
+            <details id="venue-details" class="card venue-card disclosure"><summary>其他地点</summary><div class="disclosure-content">
+              <div class="card-head"><div><div class="eyebrow">可前往地点</div><h2>探索版图</h2></div></div>
               <div id="hub-venues" class="grid"></div>
-            </section>
+            </div></details>
           </div>
         </div>
       </section>
@@ -109,53 +113,48 @@
 
       <section id="workspace-panel-records" class="workspace-panel workspace-records hidden" data-workspace-panel="records" role="tabpanel" aria-labelledby="workspace-tab-records">
         <div class="workspace-title"><span class="workspace-number">05</span><div><span class="eyebrow">长期记录</span><h2>档案 · 远征历程</h2><p>回顾最近一次远征带回的物资与进展。</p></div></div>
-        <section class="card records-card"><div class="card-head"><div><div class="eyebrow">远征履历</div><h2>生涯记录</h2></div></div><div id="hub-last-report" class="notice-box">暂无远征记录。</div></section>
+        <div id="career-stats" class="stats career-stats"></div><section class="card records-card"><div class="card-head"><div><div class="eyebrow">远征履历</div><h2>生涯记录</h2></div></div><div id="hub-last-report" class="notice-box">暂无远征记录。</div></section>
       </section>
     </section>
 
     <section id="raid-screen" class="screen hidden">
-      <div class="raid-layout">
-        <div class="raid-main">
-          <section class="card risk-card">
-            <div class="card-head"><div><div class="eyebrow">局内状态</div><h2>风险与撤离</h2></div><span id="raid-status" class="pill">行动中</span></div>
-            <h3 id="raid-heading" class="raid-heading">本次远征</h3>
-            <div id="raid-statusline" class="raid-status"></div><div class="risk-meter" aria-label="风险值"><i id="risk-meter-fill"></i></div>
-            <div class="probabilities" aria-label="本次搜获与撤离概率">
-              <div class="prob acq"><label>材料发现</label><strong id="prob-acquisition">—</strong></div>
-              <div class="prob event"><label>事件触发</label><strong id="prob-encounter">—</strong></div>
-              <div class="prob-row"><div class="prob full"><label>完整带回</label><strong id="prob-full">—</strong></div><div class="prob partial"><label>部分带回</label><strong id="prob-partial">—</strong></div><div class="prob fail"><label>行动失败</label><strong id="prob-fail">—</strong></div></div>
+      <section id="raid-cockpit" class="card risk-card">
+        <div class="card-head"><h3 id="raid-heading" class="raid-heading">本次远征</h3><span id="raid-status" class="pill">行动中</span></div>
+        <div id="raid-statusline" class="raid-status"></div>
+        <div id="field-play-grid" class="field-play-grid">
+          <div class="field-scene-column">
+            <div id="field-scene" class="field-scene" aria-label="当前远征现场"></div>
+            <div id="field-depth" class="field-depth" aria-label="当前深入程度"></div>
+            <section id="raid-turn-card" class="turn-card hidden" aria-live="polite">
+              <div class="turn-heading"><h2 id="raid-turn-title">刚刚发生</h2></div>
+              <p id="raid-turn-text" class="turn-copy"></p>
+              <div id="raid-turn-changes" class="turn-changes"></div><div id="raid-turn-items" class="turn-items"></div>
+            </section>
+          </div>
+          <div id="field-decision" class="field-decision">
+            <div id="field-next-step" class="field-next-step"></div>
+            <section id="raid-event-card" class="npc-card hidden" aria-live="polite">
+              <span id="event-type-label" class="event-type-label">人物交流</span>
+              <div class="npc-head"><img id="event-image" src="/assets/generated/scholar.png" alt="当前遭遇" decoding="async"><div><h3 id="event-title"></h3><p id="event-text"></p></div></div>
+              <div id="event-choices" class="grid choice-grid"></div>
+            </section>
+            <section id="pending-loot-card" class="card loot-card hidden"><h2>背包装不下了</h2><p class="loot-next-step">选择带走哪些发现，也可以先整理背包腾出空间。</p><div id="pending-loot-actions" class="actions"></div><div class="item-browser item-browser-field"><div id="pending-loot-items" class="grid item-grid"></div><aside id="pending-item-detail" class="item-detail" role="region" aria-label="本轮发现详情" aria-live="polite">选择物品查看详情。</aside></div></section>
+            <div id="field-search-controls">
+              <div class="outlook-strip" aria-label="当前形势"><div><span>发现</span><strong id="prob-acquisition">—</strong></div><div><span>遭遇</span><strong id="prob-encounter">—</strong></div><div><span>带回</span><strong id="prob-full">—</strong></div></div>
+              <div id="search-approaches" class="search-approaches" role="group" aria-label="搜索方式"></div>
+              <p id="approach-hint" class="approach-hint"></p>
+              <div id="raid-actions" class="actions raid-actions"></div>
             </div>
-            <details class="material-probability-details"><summary>查看各类材料发现概率</summary><p class="tiny">每次搜索至少发现该类一份的概率，包含额外掉落；不同类别可同时出现。</p><div id="raid-material-probabilities" class="material-probabilities" aria-label="每次搜索至少发现各类材料一份的概率"></div></details>
-            <div id="encounter-pacing" class="pacing-notice" role="status" aria-live="polite">搜索、风险与遭遇节奏会在这里更新。</div>
-            <p id="encounter-reason" class="meta"></p><details class="parts"><summary>查看概率说明</summary><div id="probability-parts" class="parts-list"></div></details>
-          </section>
-          <section id="raid-event-card" class="npc-card hidden" aria-live="polite">
-            <div class="area-section-heading"><span class="area-symbol">!</span><div><span class="eyebrow">临场状况</span><h2>当前遭遇</h2></div><span id="event-type-label" class="event-type-label">人物交流</span></div>
-            <div class="npc-head"><img id="event-image" src="/assets/generated/scholar.png" alt="当前遭遇" decoding="async"><div><h3 id="event-title"></h3><p id="event-text"></p></div></div>
-            <p class="event-next-step">处理当前遭遇与待整理发现后，再继续搜索或撤离。</p>
-            <div id="event-choices" class="grid choice-grid"></div>
-          </section>
-          <section id="pending-loot-card" class="card loot-card hidden"><div class="area-section-heading"><span class="area-symbol">＋</span><div><span class="eyebrow">刚刚发现</span><h2>整理本轮物资</h2></div></div><p class="loot-next-step">先处理本轮发现，再继续搜索或撤离。</p><div class="item-browser item-browser-field"><div id="pending-loot-items" class="grid item-grid"></div><aside id="pending-item-detail" class="item-detail" role="region" aria-label="本轮发现详情" aria-live="polite">选择物品查看详情。</aside></div><div id="pending-loot-actions" class="actions"></div></section>
-          <section id="raid-turn-card" class="turn-card hidden" aria-live="polite">
-            <div class="turn-heading"><span class="turn-mark">↻</span><div><span class="eyebrow">行动回报</span><h2 id="raid-turn-title">本轮结果</h2></div></div>
-            <p id="raid-turn-text" class="turn-copy"></p>
-            <div id="raid-turn-changes" class="turn-changes"></div>
-            <div id="raid-turn-items" class="turn-items"></div>
-          </section>
-          <section class="card action-zone">
-            <div class="area-section-heading"><span class="area-symbol">02</span><div><span class="eyebrow">主要操作</span><h2>行动区</h2></div><span class="tiny">每次操作都可查看对应概率</span></div>
-            <div class="extraction-hint"><img src="/assets/generated/taxi.png" alt="撤离接应" decoding="async"><span id="extraction-hint-text">根据当前情况选择搜索、应对或撤离。</span></div>
-            <div id="raid-actions" class="actions raid-actions"></div>
+            <p id="extraction-hint-text" class="tiny"></p>
             <div id="raid-feedback" class="message hidden" role="status" aria-live="polite"></div>
-          </section>
+          </div>
         </div>
-        <aside class="raid-side">
-          <section class="card auxiliary-card bag-card"><div class="card-head"><div><div class="eyebrow">随身战利品</div><h2>背包重量 <span id="bag-capacity"></span></h2></div><button class="button small" id="refresh-state" type="button">同步进度</button></div><div class="item-browser item-browser-field"><div id="raid-bag" class="grid item-grid"></div><aside id="bag-item-detail" class="item-detail" role="region" aria-label="背包物品详情" aria-live="polite">选择物品查看详情。</aside></div></section>
-          <section class="card auxiliary-card"><div class="card-head"><div><div class="eyebrow">研究者</div><h2>个人档案</h2></div></div><div id="raid-team" class="grid"></div></section>
-          <section class="card auxiliary-card"><div class="card-head"><div><div class="eyebrow">课题衔接</div><h2>研究准备</h2></div></div><div id="raid-objective" class="notice-box"></div></section>
-          <section class="card auxiliary-card"><div class="card-head"><div><div class="eyebrow">行动记录</div><h2>本局日志</h2></div></div><div id="raid-log" class="log"></div></section>
-        </aside>
-      </div>
+        <details id="raid-observations" class="disclosure"><summary>更多现场线索</summary><div class="disclosure-content"><div id="expedition-context" class="expedition-context"></div><p id="encounter-reason" class="meta"></p><div id="raid-material-probabilities" class="material-probabilities" aria-label="材料线索"></div><p id="encounter-pacing" class="tiny"></p></div></details>
+      </section>
+      <aside class="raid-side">
+        <details id="raid-bag-details" class="card auxiliary-card bag-card disclosure"><summary>整理背包 <span id="bag-capacity" class="foldout-summary"></span></summary><div class="disclosure-content"><div class="item-browser item-browser-field"><div id="raid-bag" class="grid item-grid"></div><aside id="bag-item-detail" class="item-detail" role="region" aria-label="背包物品详情" aria-live="polite">选择物品查看详情。</aside></div></div></details>
+        <details id="raid-journal" class="card auxiliary-card disclosure"><summary>目标与行动记录</summary><div class="disclosure-content"><div id="raid-objective" class="notice-box"></div><div id="raid-log" class="log"></div><div id="raid-team" class="grid"></div><button class="button small" id="refresh-state" type="button">同步进度</button></div></details>
+      </aside>
     </section>
 
     <section id="result-screen" class="screen hidden">
@@ -166,11 +165,11 @@
           <section class="result-section result-losses"><div class="result-section-head"><span class="result-icon">−</span><div><h3>本次损失</h3><p>未能带回的物品</p></div></div><div id="result-lost-items" class="grid item-grid result-item-grid"></div></section>
         </div>
         <aside id="result-item-detail" class="item-detail result-item-detail" role="region" aria-label="结算物品详情" aria-live="polite">选择物品查看详情。</aside>
-        <div class="result-probability-panel"><h3>结算前概率</h3><div class="result-probabilities"><div><span>完整带回</span><strong id="result-full">—</strong></div><div><span>部分带回</span><strong id="result-partial">—</strong></div><div><span>行动失败</span><strong id="result-fail">—</strong></div></div></div>
         <div id="result-gear" class="meta"></div><div id="result-feedback" class="message hidden" role="status"></div>
         <button id="result-return" class="button primary result-return" type="button">返回研究工位</button>
       </section>
     </section>
+    <footer class="station-footer"><span>逃离象牙塔夫</span><span>每一次带回，都离下一篇论文更近。</span></footer>
   </main>
   <script type="module" src="/probability-app.js"></script>
 </body>

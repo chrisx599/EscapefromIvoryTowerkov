@@ -1,12 +1,14 @@
 import { itemIconHtml } from './item-art.js';
+import { likelihoodLabel, riskLabel } from './expedition-language.js';
+import { renderFieldScene } from './field-scene.js';
+import { renderResearchWorkbench } from './research-workbench.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
-const esc = value => String(value == null ? '' : value).replace(/[&<>"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char]));
+const esc = value => plainOutcome(value).replace(/[&<>"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char]));
 const attr = value => esc(value).replace(/'/g, '&#39;');
-const pct = value => Number.isFinite(Number(value)) ? Number(value).toFixed(1) + '%' : '—';
-const friendlyPct = value => Number.isFinite(Number(value)) ? Number(value).toFixed(1).replace(/\.0$/, '') + '%' : '—';
 const number = value => Number.isFinite(Number(value)) ? Number(value).toLocaleString('zh-CN') : '—';
+const scrollBehavior = () => matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
 const SLOT_LABELS = { bag: '背包', focus: '专注设备', tool: '研究工具', device: '计算设备', storage: '存储设备' };
 const VENUE_SCENE_ART = {
   conference: ['/assets/generated/poster-board.png', '学术交流展示板'],
@@ -28,6 +30,8 @@ try {
   }
 } catch { /* In-memory retry protection remains available without storage. */ }
 let setupSelection = { venue: '', difficulty: '' };
+let searchApproach = 'search';
+let renderedRaidId = null;
 let requestSequence = 0;
 const WORKSPACES = {
   prepare: { title: '出发准备', description: '选地点和难度、配好装备，再开始探索。' },
@@ -57,7 +61,8 @@ function openEquipmentPicker(slot) {
   if (changed) { selectedItems.delete('equipment-owned'); selectedItems.delete('equipment-shop'); }
   $('#equipment-picker-feedback')?.classList.add('hidden');
   renderEquipmentPicker();
-  $('#equipment-picker')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  $('#equipment-picker')?.focus({ preventScroll: true });
+  $('#equipment-picker')?.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
 }
 function closeEquipmentPicker() {
   const slot = equipmentPickerSlot;
@@ -200,7 +205,7 @@ function selectItemCell(button) {
   renderItemDetail(zone);
   if (zone === 'loadout') { openEquipmentPicker(button.dataset.itemKey); return; }
   const detail = $(context.detailSelector);
-  if (detail && innerWidth <= 760) detail.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  if (detail && innerWidth <= 760) detail.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
 }
 try {
   const saved = sessionStorage.getItem('xuefa-workspace');
@@ -305,11 +310,13 @@ function rememberRequest(request) {
   } catch { /* The same request can still be retried during this page session. */ }
 }
 function notice(text, kind) {
-  for (const selector of ['#global-feedback', '#raid-feedback']) {
+  const active = view && isProbabilityRaidView(view) && view.status !== 'ended' ? '#raid-feedback' : hub && !view ? '#hub-feedback' : '#global-feedback';
+  for (const selector of ['#global-feedback', '#hub-feedback', '#raid-feedback']) {
     const box = $(selector);
     if (!box) continue;
-    box.textContent = text || '';
-    box.className = 'message' + (text ? '' : ' hidden') + (kind ? ' ' + kind : '');
+    const visibleText = selector === active ? text : '';
+    box.textContent = plainOutcome(visibleText || '');
+    box.className = 'message' + (visibleText ? '' : ' hidden') + (kind ? ' ' + kind : '');
   }
 }
 function toggleBusy(value, message) {
@@ -368,16 +375,16 @@ function actionButton(action, label, disabled, reason, detail) {
 function renderStats() {
   const identity = hub.identity || {};
   const school = typeof identity.school === 'object' ? identity.school.name : identity.school;
-  const research = hub?.research || {};
-  const stats = [
-    ['研究者', [identity.name, school, identity.major].filter(Boolean).join(' · ') || '新研究者'],
-    ['科研经费', number(hub.funding) + ' 点'],
-    ['仓库容量', number(hub.stashUsed) + ' / ' + number(hub.stashCap) + ' 格'],
-    ['研究阶段', research.stageName || '本科'],
-    ['远征', number(hub.raids) + ' 次 · 成功撤离 ' + number(hub.extracted) + ' 次'],
-  ];
-  $('#hub-stats').innerHTML = stats.map(row => '<div class="stat"><label>' + esc(row[0]) + '</label><strong>' + esc(row[1]) + '</strong></div>').join('');
+  const research = hub.research || {};
+  const render = rows => rows.map(([label, value, help]) => '<div class="stat"><label>' + esc(label) + '</label><strong>' + esc(value) + '</strong>' + (help ? '<small>' + esc(help) + '</small>' : '') + '</div>').join('');
+  $('#hub-stats').innerHTML = render([['经费', number(hub.funding)], ['阶段', research.stageName || '本科生']]);
+  $('#career-stats').innerHTML = render([
+    ['研究者', identity.name || '新研究者', [school, identity.major].filter(Boolean).join(' · ')],
+    ['仓库', number(hub.stashUsed) + ' / ' + number(hub.stashCap) + ' 格'],
+    ['远征', number(hub.raids) + ' 次'], ['成功撤离', number(hub.extracted) + ' 次'],
+  ]);
 }
+
 function researchPreparationText() {
   const available = new Map(stashItems().map(item => [item.id, Math.max(0, Number(item.count || 0) - Number(item.packedCount || 0))]));
   const research = hub.research || {};
@@ -428,6 +435,9 @@ function renderSetup() {
     $('#setup-venue-scene-name').textContent = selectedVenueName(venues, setupSelection.venue);
   }
   const selected = venues.find(item => item.id === setupSelection.venue);
+  const difficulty = difficulties.find(item => item.id === setupSelection.difficulty);
+  $('#setup-venue-caption').textContent = selected?.desc || '寻找下一份研究材料';
+  $('#launch-summary').textContent = (selected?.name || '未选择地点') + ' · ' + (difficulty?.name || '未选择难度') + ' · 出行费 ' + number(selected?.cost || 0);
   const blocked = !selected || selected.disabled || !difficulties.some(item => item.id === setupSelection.difficulty && !item.disabled);
   const poor = selected && Number(hub.funding) < Number(selected.cost || 0);
   $('#hub-start-raid').disabled = pending || uncertainMutation || blocked || poor;
@@ -436,104 +446,46 @@ function renderSetup() {
 
 function materialProbabilityHtml(materials, conditional = false) {
   return (materials || []).map(item => {
-    const label = item.name || item.id;
-    const rate = conditional ? item.conditionalProbability : item.hitProbability;
-    const title = label + ' · ' + (conditional ? '搜获成功后类别占比 ' : '每次搜索至少发现一份 ') + pct(rate)
-      + (Number(item.weightBonus) > 0 ? ' · 装备使该类别权重增加 ' + number(item.weightBonus) + '%' : '');
-    return '<div data-material-id="' + attr(item.id) + '" title="' + attr(title) + '" aria-label="' + attr(title) + '">' + itemIconHtml(item, 'item-icon-small')
-      + '<span>' + esc(MATERIAL_LABELS[item.id] || label) + '</span><strong>' + pct(rate) + '</strong></div>';
+    const rate = Number(conditional ? item.conditionalProbability : item.hitProbability);
+    const label = rate >= 40 ? '常见' : rate >= 20 ? '偶有发现' : rate > 0 ? '较难寻找' : '暂无线索';
+    const hint = item.name + ' · ' + label + (Number(item.weightBonus) > 0 ? ' · 装备有帮助' : '');
+    return '<div data-material-id="' + attr(item.id) + '" title="' + attr(hint) + '">' + itemIconHtml(item, 'item-icon-small') + '<span>' + esc(MATERIAL_LABELS[item.id] || item.name) + '</span><strong>' + label + '</strong></div>';
   }).join('');
 }
+
 function renderDifficultySetup(venues, difficulties) {
   const venue = venues.find(item => item.id === setupSelection.venue);
-  const previews = venue?.difficultyPreviews || [];
   const difficulty = difficulties.find(item => item.id === setupSelection.difficulty);
-  const preview = previews.find(item => item.difficultyId === setupSelection.difficulty);
-  $('#setup-difficulty-options').innerHTML = difficulties.map(item => {
-    const selected = item.id === setupSelection.difficulty;
-    const summary = item.id === 'easy' ? '收益稍低 · 容易应对' : item.id === 'hard' ? '收益更高 · 应对更难' : '收益与风险均衡';
-    return '<button type="button" data-difficulty-choice="' + attr(item.id) + '" aria-pressed="' + selected + '" '
-      + (item.disabled ? 'disabled' : '') + '><strong>' + esc(item.name) + '</strong><small>' + esc(summary) + '</small></button>';
-  }).join('');
-  $('#setup-difficulty-description').textContent = difficulty?.description || '同步进度后可选择本局难度。';
-  const riskGrowth = Number(preview?.searchGrowth) || 0;
-  const pressure = riskGrowth <= 6 ? '较轻' : riskGrowth <= 10 ? '适中' : riskGrowth <= 15 ? '较高' : '很高';
-  const responseText = Number(difficulty?.eventModifier) > 0 ? '遇到麻烦更容易化解。' : Number(difficulty?.eventModifier) < 0 ? '遇到麻烦更难化解。' : '按当前能力应对遇到的麻烦。';
-  const summaries = preview ? [
-    ['找到材料的机会', friendlyPct(preview.acquisition), '每次搜索都有一次发现机会。'],
-    ['探索压力', pressure, '反复搜索会积累危险。' + responseText],
-    ['完整带回的把握', friendlyPct(preview.full), '这是出发时的估计，途中会随风险变化。'],
-  ] : [];
-  $('#setup-difficulty-preview').innerHTML = summaries.map(([label, value, help]) => '<div class="difficulty-summary"><span>' + label + '</span><strong>' + esc(value) + '</strong><small>' + esc(help) + '</small></div>').join('') || '同步进度后可查看这次探索的情况。';
-  const rows = preview ? [
-    ['acquisition', '每次搜索找到材料', pct(preview.acquisition)],
-    ['searchGrowth', '每次搜索增加的风险', '+' + number(preview.searchGrowth)],
-    ...(Number(difficulty?.eventModifier) ? [['eventModifier', '应对成功机会相比标准难度', Number(difficulty.eventModifier) > 0 ? '提高 ' + number(difficulty.eventModifier) + ' 个百分点' : '降低 ' + number(Math.abs(difficulty.eventModifier)) + ' 个百分点']] : []),
-    ['encounter', '首次搜索遇到事件', pct(preview.encounter)],
-    ...(Number(preview.extraDrop) ? [['extraDrop', '找到材料后，再多找到一份', pct(preview.extraDrop)]] : []),
-    ['full', '出发时完整带回', pct(preview.full)],
-    ['partial', '出发时丢失一份材料', pct(preview.partial)],
-    ['fail', '出发时未能带回未保护物品', pct(preview.fail)],
-  ] : [];
-  $('#setup-difficulty-numbers').innerHTML = rows.map(([field, label, value]) => '<div class="difficulty-metric"><span>' + label + '</span><strong data-preview-field="' + field + '">' + esc(value) + '</strong></div>').join('');
+  const preview = venue?.difficultyPreviews?.find(item => item.difficultyId === setupSelection.difficulty);
+  $('#setup-difficulty-options').innerHTML = difficulties.map(item => '<button type="button" data-difficulty-choice="' + attr(item.id) + '" aria-pressed="' + (item.id === setupSelection.difficulty) + '" ' + (item.disabled ? 'disabled' : '') + '><strong>' + esc(item.name) + '</strong></button>').join('');
+  const description = difficulty?.id === 'easy' ? '从容一点，收获也少一些' : difficulty?.id === 'hard' ? '更多发现，也更考验临场应对' : '适合稳步探索';
+  $('#setup-difficulty-description').textContent = description;
+  $('#setup-difficulty-preview').innerHTML = preview ? '<span>发现材料 <b>' + likelihoodLabel(preview.acquisition) + '</b></span><span>完整带回 <b>' + likelihoodLabel(preview.full) + '</b></span>' : '';
   $('#setup-material-pool').innerHTML = materialProbabilityHtml(preview?.materials || venue?.pool?.materials, true);
 }
 
 function renderResearch() {
+  const root = $('#research-card');
+  const opened = new Set([...root.querySelectorAll('details[open]')].map(detail => detail.dataset.researchDetail));
+  root.innerHTML = renderResearchWorkbench({ hub, items: stashItems(), catalog: itemCatalog(), button: hubButton });
+  for (const detail of root.querySelectorAll('details[data-research-detail]')) {
+    if (opened.has(detail.dataset.researchDetail)) detail.open = true;
+  }
   const research = hub.research || {};
-  const skills = research.skills || {};
-  const papers = research.papers || [];
   const project = research.project;
-  $('#research-stage').textContent = research.nextStage ? (research.stageName || '研究阶段') + ' → ' + research.nextStage : research.stageName || '研究阶段';
-  const direction = research.directions && research.directions[research.direction];
-  const lines = [
-    research.stageName || '',
-    direction ? '方向：' + direction.name : '',
-    '工程 Lv.' + (skills.engineering ?? 1) + ' · 研究 Lv.' + (skills.research ?? 1) + ' · 表达 Lv.' + (skills.expression ?? 1),
-    '研究日 ' + number(research.day) + ' · 已录用 ' + papers.length + ' 篇 · 实验能力 ' + number(research.capacity),
-  ];
-  if (project) lines.push('当前项目：' + (project.title || project.type) + ' · ' + project.status + ' · 实验 ' + number(project.runs) + '/6 轮 · 质量 ' + number(project.quality) + '/' + number(project.target));
-  if (research.promotionReasons && research.promotionReasons.length) lines.push('晋升条件：' + research.promotionReasons.join('；'));
-
-  const templates = research.templates || [];
-  const starter = templates.find(template => template.id === 'replicate') || templates[0];
+  const starter = (research.templates || []).find(row => row.id === 'replicate') || research.templates?.[0];
   const inventory = new Map(stashItems().map(item => [item.id, item]));
   const experiment = (research.actions || []).find(action => action.id === 'research:experiment');
-  if (project && experiment?.disabled && experiment.reason) lines.push('当前实验缺口：' + experiment.reason);
-  if (!project && starter) {
-    const needs = Object.entries(starter.materials || {}).map(([id, count]) => {
-      const item = inventory.get(id);
-      const available = Math.max(0, Number(item?.count || 0) - Number(item?.packedCount || 0));
-      return { id, name: item?.name || itemCatalog().get(id)?.name || id, need: count, missing: Math.max(0, count - available) };
-    }).filter(item => item.missing);
-    if (needs.length) lines.push('复现缺口：' + needs.map(item => item.name + ' ×' + item.missing).join('、'));
-    const computeAvailable = Math.max(0, Number(inventory.get('compute')?.count || 0) - Number(inventory.get('compute')?.packedCount || 0));
-    if (computeAvailable < 2) lines.push('实验准备：算力卡 ' + computeAvailable + '/2；可通过探索、资源交换或商店补齐。');
-  }
-  $('#research-profile').innerHTML = lines.filter(Boolean).map(line => '<div>' + esc(line) + '</div>').join('');
-  $('#setup-gap').textContent = lines.filter(line => /^(当前实验缺口|复现缺口|实验准备)：/.test(line)).join('；')
-    || (project ? '当前课题：' + (project.title || '研究项目') + '。带回算力后可继续实验。' : '研究材料已齐，可在工作台创建课题；也可搜集下一轮所需算力。');
-
-  const directions = Object.entries(research.directions || {}).map(([id, item]) => {
-    const label = (id === research.direction ? '● ' : '') + (item.name || id);
-    const disabled = Boolean(project) || id === research.direction;
-    return hubButton('research:direction:' + id, label, disabled, project ? '请先完成或放弃当前项目' : '');
-  }).join('');
-  const actions = (research.actions || []).map(action => '<div>' + hubButton(action.id, action.name, action.disabled, action.reason)
-    + (action.reason ? '<small class="disabled-reason">' + esc(action.reason) + '</small>' : '') + '</div>').join('');
-  $('#research-actions').innerHTML = directions + actions;
-
-  const shopNames = new Map((hub.shop || []).map(item => [item.id, item.name]));
-  $('#research-templates').innerHTML = project
-    ? '<article class="item-card"><div class="item-copy"><div class="item-title">' + esc(project.title || project.type) + '</div><div class="meta">' + esc(project.status || '') + ' · 已完成 ' + number(project.runs) + '/6 轮 · 质量 ' + number(project.quality) + '/' + number(project.target) + '</div></div></article>'
-    : templates.map(template => {
-      const materials = Object.entries(template.materials || {}).map(([id, count]) => (shopNames.get(id) || id) + ' ×' + count).join('、');
-      return '<article class="item-card"><div class="item-copy"><div class="item-title">' + esc(template.name) + '</div><div class="meta">立项材料：' + esc(materials) + ' · ' + number(template.cost) + ' 经费</div><div class="item-controls">' + hubButton('research:start:' + template.id, '创建课题', template.disabled, template.reason) + '</div>' + (template.reason ? '<small class="disabled-reason">' + esc(template.reason) + '</small>' : '') + '</div></article>';
-    }).join('') || '<div class="empty">当前没有可创建的研究项目。</div>';
-  $('#research-preparations').innerHTML = (research.preparations || []).map(item => hubButton('research:prepare:' + item.id, '整理 ' + item.inputName + ' → ' + item.outputName, item.disabled, item.reason)).join('');
-  $('#research-papers').innerHTML = papers.length
-    ? '<strong>已录用论文 ' + papers.length + ' 篇</strong><div class="meta">' + papers.slice(-4).reverse().map(paper => esc(paper.title || paper.type || '研究论文') + ' · 质量 ' + number(paper.quality)).join('<br>') + '</div>'
-    : '<span class="meta">尚无已录用论文；完成实验、投稿与审稿后会记录于此。</span>';
+  const targetNeeds = { ...(starter?.materials || {}), compute: Math.max(2, Number(starter?.materials?.compute) || 0) };
+  const targetMissing = Object.entries(targetNeeds).map(([id, count]) => {
+    const item = inventory.get(id);
+    const missing = Math.max(0, count - Math.max(0, Number(item?.count || 0) - Number(item?.packedCount || 0)));
+    return missing ? (MATERIAL_LABELS[id] || item?.name || id) + ' ×' + missing : '';
+  }).filter(Boolean);
+  $('#setup-gap').textContent = project?.status === 'submitted' ? '论文已投稿，可以返回研究工位查看审稿'
+    : project?.status === 'ready' ? '审稿通过，可以返回研究工位确认录用'
+    : project ? (experiment?.disabled && experiment.reason ? '实验准备：' + experiment.reason : '材料就绪，可以继续实验')
+    : targetMissing.length ? '需要：' + targetMissing.join(' · ') : '材料就绪，可以开始研究';
 }
 
 function renderInventory() {
@@ -554,6 +506,7 @@ function renderInventory() {
   const supplies = hub.supplies || [];
   const supplyCount = supplies.reduce((total, row) => total + Number(row.count || 0), 0);
   $('#supply-count').textContent = supplyCount + ' / 3 件';
+  $('#equipment-summary').textContent = Object.values(loadout).filter(Boolean).length + ' 件装备 · ' + supplyCount + ' 件补给';
   renderItemZone('supplies', '#hub-supplies', '#supplies-item-detail', supplies.map(row => {
     const item = row.item || catalog.get(row.id) || { id: row.id, name: row.id };
     return { key: row.id, item, count: row.count, state: '已预留', actions: hubButton('unpack:' + row.id, '卸下一件补给') };
@@ -581,7 +534,7 @@ function renderInventory() {
   renderItemZone('shop', '#hub-shop', '#shop-item-detail', (hub.shop || []).map(item => {
     const stageLocked = Number(item.minStage || 0) > Number(hub.research?.stage || 0);
     const tooExpensive = Number(hub.funding || 0) < Number(item.price || 0);
-    const reason = stageLocked ? '当前身份尚未解锁，需要研究阶段 ' + (Number(item.minStage) + 1) : tooExpensive ? '经费不足，需要 ' + number(item.price) : '';
+    const reason = stageLocked ? equipmentStageReason(item) : tooExpensive ? '经费不足，需要 ' + number(item.price) : '';
     return { key: item.id, item, count: item.count || 0, price: item.price,
       state: stageLocked ? '未解锁' : tooExpensive ? '经费不足' : '', reason,
       actions: hubButton('buy:' + item.id, '购买一件 · ' + number(item.price) + ' 经费', stageLocked || tooExpensive, reason) };
@@ -594,7 +547,7 @@ function renderInventory() {
     return { key: row.id, item, count: row.count, state: '待入库',
       actions: hubButton('store:' + row.id, '存入仓库', Number(hub.stashUsed) >= Number(hub.stashCap), '仓库已满') + hubButton('sell-overflow:' + row.id, '出售 +' + number(item.sellPrice ?? item.value ?? 0)) };
   }));
-  $('#hub-venues').innerHTML = asOptions(hub.probabilitySetup?.venues).map(venue => '<article class="item-card"><div class="item-copy"><div class="item-title">' + esc(venue.name) + '</div><div class="meta">' + esc(venue.desc || '') + ' · ' + number(venue.cost) + ' 经费</div><div class="meta">' + esc(venue.reason || '已解锁，可在远征准备中选择') + '</div></div></article>').join('') || '<div class="empty">服务端暂无地点配置。</div>';
+  $('#hub-venues').innerHTML = asOptions(hub.probabilitySetup?.venues).map(venue => '<article class="item-card venue-entry' + (venue.disabled ? ' is-locked' : '') + '"><span class="venue-index" aria-hidden="true">' + (venue.disabled ? '◇' : '◎') + '</span><div class="item-copy"><div class="item-title">' + esc(venue.name) + '</div><div class="meta">' + esc(venue.desc || '') + ' · ' + number(venue.cost) + ' 经费</div><div class="meta">' + esc(venue.reason || '已解锁，可在远征准备中选择') + '</div></div></article>').join('') || '<div class="empty">服务端暂无地点配置。</div>';
   const report = hub.lastReport;
   $('#hub-last-report').textContent = report
     ? (({ clean: '完整撤离', partial: '部分撤离', fail: '行动失败', scatter: '散场失败' })[report.kind] || '远征结算')
@@ -624,54 +577,44 @@ function exitAction(action) {
   return action.endsRaid === true || Boolean(action.exitProbabilities) || action.id === 'respond:leave';
 }
 function exitPreview(probabilities) {
-  return '完整 ' + pct(probabilities.full) + ' / 部分 ' + pct(probabilities.partial) + ' / 失败 ' + pct(probabilities.fail);
+  return '完整带回' + likelihoodLabel(probabilities?.full) + '；仍可能遗失物资';
 }
+
 function plainOutcome(value) {
-  return String(value || '').replaceAll('实际后果：', '结果：')
-    .replace(/接应支持\s*\+[\d.]+（部分带回率\s*([\d.]+)%→([\d.]+)%）/g, '接应更可靠（丢失部分物资的机会 $1%→$2%）')
-    .replaceAll('检定未通过。', '这次没能解决问题。')
-    .replaceAll('无检定；该方案按 100% 成功结算。', '按所列消耗执行，不会额外失败。');
+  // Legacy saves may contain numeric odds in persisted logs; present them qualitatively too.
+  return String(value == null ? '' : value)
+    .replaceAll('实际后果：', '结果：').replaceAll('检定未通过。', '这次没能解决问题。')
+    .replaceAll('无检定；该方案按 100% 成功结算。', '按所列消耗执行，不会额外失败。')
+    .replace(/接应支持\s*\+[\d.]+（[^）]*）/g, '接应更可靠')
+    .replace(/([\d.]+)%\s*[→⇒]\s*([\d.]+)%/g, (_, from, to) => Number(to) > Number(from) ? '有所提高' : Number(to) < Number(from) ? '有所降低' : '保持不变')
+    .replace(/([+-]?[\d.]+)\s*(?:%|％|个百分点|百分点)/g, (_, value) => value.startsWith('-') ? '有所降低' : value.startsWith('+') ? '有所提升' : likelihoodLabel(value))
+    .replace(/风险(?:增加到|降低到|降至|升至)\s*([\d.]+)/g, (_, value) => '形势' + riskLabel(value))
+    .replace(/风险\s*[+＋]([\d.]+)/g, '风险上升').replace(/风险\s*[−-]([\d.]+)/g, '风险减轻');
 }
+
 function renderGenericActions(target, actions, skip, probabilities) {
-  const shouldSkip = skip || (() => false);
-  const list = (actions || []).filter(action => !shouldSkip(action));
+  const list = (actions || []).filter(action => !(skip || (() => false))(action));
   target.innerHTML = list.map(action => {
-    const cost = formatCost(action.cost);
-    const isLeave = exitAction(action);
-    const probabilityLabel = action.id === 'search' ? '找到材料的机会 ' : /^(respond|event):/.test(action.id) ? '应对成功机会 ' : '成功机会 ';
-    const probability = action.probability == null || isLeave ? '' : probabilityLabel + pct(action.probability);
-    const searchEvent = action.searchPreview?.encounter == null ? '' : '事件触发 ' + pct(action.searchPreview.encounter);
-    const exit = action.exitProbabilities || (action.id === 'extract' ? probabilities : null);
-    const exitOdds = exit ? (isLeave ? '直接撤离：' : '当前带回概率：') + exitPreview(exit) : '';
-    const fallbackSearchCost = action.id === 'search' && !cost ? '心力 −1' : '';
-    const effect = !isLeave && (action.success || action.failure) ? '成功：' + (action.success || '—') + ' · 未解决：' + (action.failure || '—') : '';
-    const detail = [cost || fallbackSearchCost, probability, searchEvent, exitOdds, effect, action.reason || ''].filter(Boolean).join(' · ');
-    const primary = action.id === 'search' || action.id === 'extract';
-    return '<button type="button" class="button ' + (primary ? 'primary' : '') + '" data-action="' + attr(action.id)
-      + '" data-server-disabled="' + (action.disabled ? 'true' : 'false') + '" ' + (action.disabled || pending || uncertainMutation ? 'disabled' : '')
-      + (action.reason ? ' title="' + attr(action.reason) + '"' : '') + '>' + esc(action.name || action.id)
-      + (detail ? '<small>' + esc(detail) + '</small>' : '') + '</button>';
+    const isSearch = action.kind === 'search' || /^search(?::|$)/.test(action.id);
+    const isExtract = action.id === 'extract';
+    const detail = action.disabled ? action.reason : isSearch ? '心力 −1' : isExtract ? '结束远征，带回收获' : action.id === 'take:available' ? '其余发现将放弃' : action.id === 'take:skip' ? '保留原背包' : formatCost(action.cost);
+    return '<button type="button" class="button ' + (isSearch ? 'primary' : '') + '" data-action="' + attr(action.id) + '" data-server-disabled="' + Boolean(action.disabled) + '" ' + (action.disabled || pending || uncertainMutation ? 'disabled' : '') + '>' + esc(isSearch ? '搜索一次' : action.name || action.id) + (detail ? '<small>' + esc(detail) + '</small>' : '') + '</button>';
   }).join('') || '<span class="tiny">当前没有可执行行动。</span>';
 }
 
 function renderEventChoices(actions, hasPendingLoot = false) {
-  $('#event-choices').innerHTML = (actions || []).map((action, index) => {
+  const openChoices = new Set([...$('#event-choices').querySelectorAll('details[open]')].map(el => el.dataset.choiceDetail));
+  const unavailableOpen = $('#event-unavailable-options')?.open;
+  const renderChoice = action => {
     const leave = exitAction(action);
-    const awaitingLoot = leave && action.disabled && hasPendingLoot;
     const cost = formatCost(action.cost);
-    const descriptionId = 'event-choice-detail-' + index;
-    const probability = awaitingLoot ? '先整理本轮发现 · 整理后更新撤离概率' : leave ? '结束本局 · 按下方分布结算' : action.probability == null ? '' : '应对成功机会 ' + friendlyPct(action.probability);
-    const outcomes = awaitingLoot ? '<div class="notice-box decision-exit">背包整理完成后，可查看并执行新的撤离方案。</div>' : leave && action.exitProbabilities
-      ? '<div class="notice-box decision-exit">撤离结算：' + esc(exitPreview(action.exitProbabilities)) + '</div>'
-      : '<div class="decision-outcomes"><div class="decision-success">' + esc(plainOutcome(action.success || '按方案执行'))
-        + '</div><div class="decision-failure">' + esc(plainOutcome(action.failure || '无额外变化')) + '</div></div>';
-    return '<article class="decision-option' + (action.disabled ? ' is-disabled' : '') + '"><button type="button" class="button" data-action="' + attr(action.id)
-      + '" data-server-disabled="' + Boolean(action.disabled) + '" aria-describedby="' + descriptionId + '" '
-      + (action.disabled || pending || uncertainMutation ? 'disabled' : '') + '>' + esc(action.name || action.id)
-      + (probability ? '<small>' + esc(probability) + '</small>' : '') + '</button><div id="' + descriptionId + '">'
-      + '<div class="decision-cost"><span class="cost-chip">' + esc(cost || '无资源消耗') + '</span></div>' + outcomes
-      + (action.reason ? '<p class="disabled-reason">' + esc(action.reason) + '</p>' : '') + '</div></article>';
-  }).join('');
+    const outlook = leave ? '结束本次远征' : action.outlook || (action.probability == null ? '按方案执行' : likelihoodLabel(action.probability));
+    const outcomes = leave && action.exitProbabilities ? exitPreview(action.exitProbabilities) : '成功：' + plainOutcome(action.success || '按方案执行') + ' 未解决：' + plainOutcome(action.failure || '无额外变化');
+    return '<article class="decision-option' + (action.disabled ? ' is-disabled' : '') + '"><button type="button" class="button" data-action="' + attr(action.id) + '" data-server-disabled="' + Boolean(action.disabled) + '" ' + (action.disabled || pending || uncertainMutation ? 'disabled' : '') + '>' + esc(action.name || action.id) + '<small>' + esc(outlook) + '</small></button><div class="decision-cost">' + esc(cost || '不消耗资源') + '</div><details data-choice-detail="' + attr(action.id) + '" ' + (openChoices.has(action.id) ? 'open' : '') + '><summary>可能的结果</summary><div class="decision-outcomes">' + esc(outcomes) + '</div></details>' + (action.reason ? '<p class="disabled-reason">' + esc(action.reason) + '</p>' : '') + '</article>';
+  };
+  const enabled = (actions || []).filter(action => !action.disabled);
+  const unavailable = (actions || []).filter(action => action.disabled);
+  $('#event-choices').innerHTML = enabled.map(renderChoice).join('') + (unavailable.length ? '<details id="event-unavailable-options" class="unavailable-options" ' + (unavailableOpen ? 'open' : '') + '><summary>条件不足的方案（' + unavailable.length + '）</summary><div>' + unavailable.map(renderChoice).join('') + '</div></details>' : '');
 }
 
 function formatCost(cost) {
@@ -680,25 +623,13 @@ function formatCost(cost) {
   return Object.entries(cost).map(([key, value]) => key + ' ' + value).join(' · ');
 }
 
-function renderProbabilityParts(parts) {
-  function flatten(value, prefix) {
-    if (Array.isArray(value)) return value.flatMap((entry, index) => flatten(entry, prefix + (index + 1) + ' '));
-    if (value && typeof value === 'object') return Object.entries(value).flatMap(([key, entry]) => flatten(entry, prefix + key + ' · '));
-    return [{ label: prefix || '因素', value }];
-  }
-  const rows = flatten(parts, '');
-  $('#probability-parts').innerHTML = rows.map(row => '<div class="parts-row"><span>' + esc(row.label) + '</span><span>'
-    + esc(typeof row.value === 'number' ? Number.isInteger(row.value) ? row.value : row.value.toFixed(1) : row.value) + '</span></div>').join('')
-    || '<span class="tiny">服务器未提供分项。</span>';
-}
-
 function renderTurnResult(current) {
   const action = current.lastAction;
   $('#raid-turn-card').classList.toggle('hidden', !action);
   if (!action) return;
   $('#raid-turn-title').textContent = action.title || '本轮结果';
-  $('#raid-turn-text').textContent = plainOutcome(action.text);
-  const changes = [['心力', action.willDelta, false], ['风险', action.riskDelta, true], ['人脉', action.networkDelta, false]];
+  $('#raid-turn-text').textContent = plainOutcome(current.event ? String(action.text || '').replace(/\s*遇到[^。]*。/g, '') : action.text);
+  const changes = [['心力', action.willDelta, false], ['人脉', action.networkDelta, false]];
   $('#raid-turn-changes').innerHTML = changes.filter(([, value]) => Number.isFinite(value) && value !== 0).map(([label, value, harmfulIncrease]) => {
     const good = harmfulIncrease ? value < 0 : value > 0;
     return '<span class="turn-change ' + (good ? 'positive' : 'negative') + '">' + label + ' ' + (value > 0 ? '+' : '−') + number(Math.abs(value)) + '</span>';
@@ -714,10 +645,14 @@ function renderEncounterPacing(current) {
   if (!current.event && !pacing.cooldown && Number.isFinite(pacing.searchesUntilGuaranteed) && pacing.searchesUntilGuaranteed > 0) {
     text += ' · 最迟 ' + number(pacing.searchesUntilGuaranteed) + ' 次有效搜索内遇到事件';
   }
-  $('#encounter-pacing').textContent = text;
+  $('#encounter-pacing').textContent = plainOutcome(text);
 }
 
 function renderRaid(current) {
+  if (current.raidId !== renderedRaidId) {
+    renderedRaidId = current.raidId; searchApproach = 'search';
+    ['#raid-bag-details', '#raid-journal', '#raid-observations'].forEach(selector => $(selector).open = false);
+  }
   const probabilities = current.probabilities || {};
   const stats = current.stats || {};
   const venue = current.venue || {};
@@ -726,21 +661,18 @@ function renderRaid(current) {
   const configuration = (difficulty.name || difficulty.id) + '难度';
   $('#raid-heading').textContent = [venue.name || venue.id || '概率远征', configuration].filter(Boolean).join(' · ');
   $('#raid-status').textContent = current.status === 'ended' ? '已结算' : '行动中';
-  $('#raid-statusline').innerHTML = '<strong>' + esc(current.player?.name || '研究者') + '</strong><span>' + esc(difficulty.description || '')
-    + '</span><span>心力 ' + number(stats.will) + '/' + number(stats.willMax) + '</span><span>人脉 ' + number(stats.network)
-    + '</span><span>风险 ' + number(stats.risk) + '</span>';
-  $('#risk-meter-fill').style.width = Math.max(0, Math.min(100, Number(stats.risk) || 0)) + '%';
-  $('#prob-acquisition').textContent = pct(probabilities.acquisition);
+  const risk = riskLabel(stats.risk);
+  renderFieldScene(current, { scene: $('#field-scene'), depth: $('#field-depth'), status: $('#raid-statusline'), next: $('#field-next-step') });
+  const expedition = current.expedition || {};
+  const condition = expedition.condition;
+  $('#expedition-context').innerHTML = condition ? '<strong>' + esc(condition.name) + '<small class="depth-label">' + esc(expedition.depthLabel || '') + '</small></strong><span>' + esc(condition.description) + '</span>' + (expedition.recentEffect ? '<small>' + esc(expedition.recentEffect.name + ' · ' + expedition.recentEffect.description) + '</small>' : '') : '<strong>初到现场</strong><span>留意线索，选择你的搜索方式</span>';
+  $('#prob-acquisition').textContent = current.outlook?.acquisition || likelihoodLabel(probabilities.acquisition);
+  $('#prob-encounter').textContent = current.event ? '正在应对' : current.outlook?.encounter || likelihoodLabel(probabilities.encounter);
+  $('#prob-full').textContent = current.outlook?.extraction || likelihoodLabel(probabilities.full);
   $('#raid-material-probabilities').innerHTML = materialProbabilityHtml(probabilities.materials);
-  $('#raid-material-probabilities').closest('details').hidden = !probabilities.materials?.length;
-  $('#prob-encounter').textContent = pct(probabilities.encounter);
-  $('#prob-full').textContent = pct(probabilities.full);
-  $('#prob-partial').textContent = pct(probabilities.partial);
-  $('#prob-fail').textContent = pct(probabilities.fail);
-  $('#encounter-reason').textContent = probabilities.encounterReason || '';
+  $('#encounter-reason').textContent = plainOutcome(probabilities.encounterReason || '');
   renderEncounterPacing(current);
   renderTurnResult(current);
-  renderProbabilityParts(probabilities.parts);
   $('#bag-capacity').textContent = number(current.bagUsed) + ' / ' + number(current.bagCap);
   const actions = current.actions || [];
   const bagActions = actions.filter(action => /^(drop|use|backup):/.test(action.id));
@@ -767,8 +699,8 @@ function renderRaid(current) {
   $('#raid-event-card').classList.toggle('hidden', !event);
   ['opportunity', 'danger', 'social'].forEach(tone => $('#raid-event-card').classList.toggle('tone-' + tone, event?.tone === tone));
   if (event) {
-    $('#event-title').textContent = [event.name, event.title].filter(Boolean).join(' · ') || '临场遭遇';
-    $('#event-text').textContent = event.text || '';
+    $('#event-title').textContent = event.kind === 'npc' ? [event.name, event.title].filter(Boolean).join(' · ') : event.title || event.name || '临场遭遇';
+    $('#event-text').textContent = plainOutcome(event.text || '').replace(/\s*当前交流方向：[^。]*。/g, '');
     $('#event-type-label').textContent = event.typeLabel || '人物交流';
     $('#event-image').src = EVENT_ART.has(event.image) ? event.image : '/assets/generated/scholar.png';
     $('#event-image').alt = event.typeLabel || '人物交流';
@@ -781,14 +713,32 @@ function renderRaid(current) {
   const pendingLoot = current.pendingLoot || [];
   const exitHint = $('#extraction-hint-text');
   if (exitHint) exitHint.textContent = event && pendingLoot.length ? '先处理当前遭遇和待整理发现，再选择下一步。' : event ? '先处理当前遭遇；也可在遭遇中选择直接撤离。'
-    : pendingLoot.length ? '先整理本轮发现，再按当前概率选择搜索或撤离。' : '撤离会立即按当前完整、部分、失败概率结算。';
+    : pendingLoot.length ? '先整理本轮发现，再决定下一步。' : '随时可以撤离；继续深入也会增加变数。';
   $('#pending-loot-card').classList.toggle('hidden', !pendingLoot.length);
   renderItemZone('pending', '#pending-loot-items', '#pending-item-detail', pendingLoot.map((item, index) => ({
     key: current.raidId + ':' + current.revision + ':' + index, item, index, state: '尚未拿取',
     description: bonusText(item) + ' 这件发现尚未进入背包，请在本轮发现区域选择拿取或放弃。',
   })));
   renderGenericActions($('#pending-loot-actions'), actions, action => !action.id.startsWith('take:'));
-  renderGenericActions($('#raid-actions'), actions, action => /^(drop|use|backup|take|respond|event):/.test(action.id), probabilities);
+  const approaches = expedition.approaches || [];
+  if (approaches.length && !approaches.some(row => row.actionId === searchApproach)) searchApproach = 'search';
+  const selected = approaches.find(row => row.actionId === searchApproach);
+  $('#search-approaches').innerHTML = approaches.map(row => '<button type="button" data-search-approach="' + attr(row.actionId) + '" aria-pressed="' + (row.actionId === searchApproach) + '" ' + (row.disabled || pending || uncertainMutation ? 'disabled' : '') + '>' + esc(row.name) + '</button>').join('');
+  $('#approach-hint').textContent = selected?.hint || '';
+  if (selected?.outlook) {
+    $('#prob-acquisition').textContent = selected.outlook.acquisition;
+    $('#prob-encounter').textContent = current.event ? '正在应对' : selected.outlook.encounter;
+  }
+  renderGenericActions($('#raid-actions'), actions, action => /^(drop|use|backup|take|respond|event):/.test(action.id) || (/^search(?::|$)/.test(action.id) && action.id !== searchApproach), probabilities);
+  const blocked = Boolean(current.event || pendingLoot.length);
+  $('#field-search-controls').hidden = blocked;
+  const decision = $('#field-decision');
+  if (pendingLoot.length) decision.insertBefore($('#pending-loot-card'), $('#raid-event-card'));
+  else decision.insertBefore($('#raid-event-card'), $('#pending-loot-card'));
+  $('#search-approaches').hidden = blocked;
+  $('#approach-hint').hidden = blocked;
+  $('#raid-actions').hidden = blocked;
+  if (pendingLoot.length && actions.find(action => action.id === 'take:all')?.disabled) $('#raid-bag-details').open = true;
   renderResult(current);
 }
 
@@ -799,7 +749,7 @@ function renderResult(current) {
   if (!ended) return;
   const labels = { clean: '完整撤离', messy: '部分撤离', scatter: '行动失败', complete: '完整撤离', partial: '部分撤离', fail: '行动失败' };
   $('#result-title').textContent = labels[result.kind] || result.title || '本局结算';
-  $('#result-summary').textContent = result.summary || result.text || '';
+  $('#result-summary').textContent = plainOutcome(result.summary || result.text || '');
   const returned = result.returned || result.returnedItems || [...(result.archivedIds || []), ...(result.carriedIds || [])];
   const lost = result.lost || result.lostItems || result.lostIds || [];
   const catalog = itemCatalog();
@@ -813,10 +763,6 @@ function renderResult(current) {
   renderItemZone('result-returned', '#result-items', '#result-item-detail', resultEntries(returned, '带回仓库', 'returned'), '没有带回材料。');
   renderItemZone('result-lost', '#result-lost-items', '#result-item-detail', resultEntries(lost, '本次遗失', 'lost'), '没有损失物品。');
   if (selectedItems.has('result-returned')) renderItemDetail('result-returned');
-  const odds = result.probabilities || current.probabilities || {};
-  $('#result-full').textContent = pct(odds.full);
-  $('#result-partial').textContent = pct(odds.partial);
-  $('#result-fail').textContent = pct(odds.fail);
   const returnedGear = result.returnedLoadoutIds || [];
   $('#result-gear').textContent = '长期能力、已发表论文和局外装备留在档案。' + (returnedGear.length ? '本次带回装备：' + returnedGear.map(id => catalog.get(id)?.name || id).join('、') : '');
   $('#result-feedback').classList.toggle('hidden', !result.noMaterialLoss);
@@ -868,7 +814,7 @@ async function readState() {
     phase = payload.phase || (view ? 'raid' : 'hub');
     succeeded = !uncertainMutation && (!view || isProbabilityRaidView(view));
     render();
-    notice(uncertainMutation ? '已读取存档，但上次操作尚未收到回执。请点击“同步存档”重试同一笔操作。'
+    notice(uncertainMutation ? '已读取存档，但上次操作尚未收到回执。请点击“同步进度”重试同一笔操作。'
       : view && !isProbabilityRaidView(view) ? '当前远征状态无法读取，请点击同步进度重试。' : hub?.migrationNotice?.text || '', uncertainMutation ? 'error' : '');
   } catch (error) { notice(error.message, 'error'); }
   finally { toggleBusy(false); render(); }
@@ -878,7 +824,7 @@ async function readState() {
 async function submitApi(path, body, label) {
   if (pending) return;
   if (uncertainMutation) {
-    notice('操作结果尚未确认。请先点击“同步存档”读取服务器状态，再继续操作。', 'error');
+    notice('操作结果尚未确认。请先点击“同步进度”读取服务器状态，再继续操作。', 'error');
     return;
   }
   const focusOrigin = document.activeElement;
@@ -908,7 +854,7 @@ async function submitApi(path, body, label) {
       if (synced) notice('已重试同一笔操作并确认服务器结果，请核对当前状态。');
       else {
         uncertainMutation = true;
-        notice('操作结果尚未确认。请点击“同步存档”读取服务器状态后再继续。', 'error');
+        notice('操作结果尚未确认。请点击“同步进度”读取服务器状态后再继续。', 'error');
       }
       return;
     }
@@ -984,11 +930,11 @@ function focusRaidStep(previous, action) {
   let card;
   if (view.pendingLoot?.length && (!previous?.pendingLoot?.length || action?.startsWith('take:'))) card = $('#pending-loot-card');
   else if (view.event && (!previous?.event || previous.event.id !== view.event.id || action?.startsWith('take:'))) card = $('#raid-event-card');
-  else if ((view.lastAction && view.revision !== previous?.revision) || action === 'search' || /^(respond|event):/.test(action || '')) card = $('#raid-turn-card');
+  else if ((view.lastAction && view.revision !== previous?.revision) || /^search(?::|$)/.test(action || '') || /^(respond|event):/.test(action || '')) card = $('#raid-turn-card');
   if (!card || card.classList.contains('hidden')) return;
   const focus = card.querySelector('button:not(:disabled)') || card.querySelector('h2');
   if (focus) { if (focus.tagName !== 'BUTTON') focus.tabIndex = -1; focus.focus({ preventScroll: true }); }
-  card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  card.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
 }
 
 $('#hub-start-raid').addEventListener('click', () => {
@@ -1006,9 +952,12 @@ $('#hub-start-raid').addEventListener('click', () => {
 
 $('#hub-screen').addEventListener('click', event => {
   const button = event.target.closest('[data-hub-action]');
+  if (button && !button.disabled && button.dataset.hubAction === 'research:abandon' && !confirm('放弃当前课题？已投入的材料与经费不会返还。')) return;
   if (button && !button.disabled) submitApi('/api/hub/action', { action: button.dataset.hubAction }, '正在更新工位存档……');
 });
 $('#raid-screen').addEventListener('click', event => {
+  const approach = event.target.closest('[data-search-approach]');
+  if (approach && !approach.disabled) { searchApproach = approach.dataset.searchApproach; renderRaid(view); $('[data-search-approach=\"' + searchApproach + '\"]')?.focus({ preventScroll: true }); return; }
   const button = event.target.closest('[data-action]');
   if (!button || button.disabled || !isProbabilityRaidView(view)) return;
   submitApi('/api/expedition/action', { action: button.dataset.action, raidId: view.raidId, revision: view.revision }, '正在提交这一步行动……');
