@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/field-station.css">
   <link rel="stylesheet" href="/field-scene.css">
   <link rel="stylesheet" href="/research-workbench.css">
+  <link rel="stylesheet" href="/career-journey.css">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 </head>
 <body>
@@ -113,7 +114,7 @@
 
       <section id="workspace-panel-records" class="workspace-panel workspace-records hidden" data-workspace-panel="records" role="tabpanel" aria-labelledby="workspace-tab-records">
         <div class="workspace-title"><span class="workspace-number">05</span><div><span class="eyebrow">长期记录</span><h2>档案 · 远征历程</h2><p>回顾最近一次远征带回的物资与进展。</p></div></div>
-        <div id="career-stats" class="stats career-stats"></div><section class="card records-card"><div class="card-head"><div><div class="eyebrow">远征履历</div><h2>生涯记录</h2></div></div><div id="hub-last-report" class="notice-box">暂无远征记录。</div></section>
+        <div id="career-stats" class="stats career-stats"></div><section class="card records-card"><div class="card-head"><div><div class="eyebrow">远征履历</div><h2>生涯记录</h2></div></div><div id="hub-last-report" class="notice-box">暂无远征记录。</div><div id="career-stories"></div></section>
       </section>
     </section>
 
@@ -136,6 +137,7 @@
             <section id="raid-event-card" class="npc-card hidden" aria-live="polite">
               <span id="event-type-label" class="event-type-label">人物交流</span>
               <div class="npc-head"><img id="event-image" src="/assets/generated/scholar.png" alt="当前遭遇" decoding="async"><div><h3 id="event-title"></h3><p id="event-text"></p></div></div>
+              <div id="event-story-context" hidden></div>
               <div id="event-choices" class="grid choice-grid"></div>
             </section>
             <section id="pending-loot-card" class="card loot-card hidden"><h2>背包装不下了</h2><p class="loot-next-step">选择带走哪些发现，也可以先整理背包腾出空间。</p><div id="pending-loot-actions" class="actions"></div><div class="item-browser item-browser-field"><div id="pending-loot-items" class="grid item-grid"></div><aside id="pending-item-detail" class="item-detail" role="region" aria-label="本轮发现详情" aria-live="polite">选择物品查看详情。</aside></div></section>
@@ -145,6 +147,7 @@
               <p id="approach-hint" class="approach-hint"></p>
               <div id="raid-actions" class="actions raid-actions"></div>
             </div>
+            <div id="field-talent" hidden></div>
             <p id="extraction-hint-text" class="tiny"></p>
             <div id="raid-feedback" class="message hidden" role="status" aria-live="polite"></div>
           </div>
@@ -160,6 +163,7 @@
     <section id="result-screen" class="screen hidden">
       <section class="result-card">
         <div class="result-heading"><span class="result-emblem">03</span><div><div class="eyebrow">本局结果</div><h2 id="result-title"></h2><div id="result-summary" class="subtle"></div></div></div>
+        <div id="result-stories"></div>
         <div class="result-columns">
           <section class="result-section result-gains"><div class="result-section-head"><span class="result-icon">＋</span><div><h3>实际带回</h3><p>本次入库的物品</p></div></div><div id="result-items" class="grid item-grid result-item-grid"></div></section>
           <section class="result-section result-losses"><div class="result-section-head"><span class="result-icon">−</span><div><h3>本次损失</h3><p>未能带回的物品</p></div></div><div id="result-lost-items" class="grid item-grid result-item-grid"></div></section>

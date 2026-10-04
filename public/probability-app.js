@@ -2,6 +2,7 @@ import { itemIconHtml } from './item-art.js';
 import { likelihoodLabel, riskLabel } from './expedition-language.js';
 import { renderFieldScene } from './field-scene.js';
 import { renderResearchWorkbench } from './research-workbench.js';
+import { renderStoryEntries } from './career-journey.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -482,7 +483,9 @@ function renderResearch() {
     const missing = Math.max(0, count - Math.max(0, Number(item?.count || 0) - Number(item?.packedCount || 0)));
     return missing ? (MATERIAL_LABELS[id] || item?.name || id) + ' ×' + missing : '';
   }).filter(Boolean);
-  $('#setup-gap').textContent = project?.status === 'submitted' ? '论文已投稿，可以返回研究工位查看审稿'
+  $('#setup-gap').textContent = research.canChooseTalent ? '新的专长等你选择，前往研究工位领取自己的拿手本事'
+    : (research.actions || []).some(row => row.id === 'research:promote' && !row.disabled) ? '晋升条件已齐，前往研究工位领取晋升奖励'
+    : project?.status === 'submitted' ? '论文已投稿，可以返回研究工位查看审稿'
     : project?.status === 'ready' ? '审稿通过，可以返回研究工位确认录用'
     : project ? (experiment?.disabled && experiment.reason ? '实验准备：' + experiment.reason : '材料就绪，可以继续实验')
     : targetMissing.length ? '需要：' + targetMissing.join(' · ') : '材料就绪，可以开始研究';
@@ -675,17 +678,17 @@ function renderRaid(current) {
   renderTurnResult(current);
   $('#bag-capacity').textContent = number(current.bagUsed) + ' / ' + number(current.bagCap);
   const actions = current.actions || [];
-  const bagActions = actions.filter(action => /^(drop|use|backup):/.test(action.id));
+  const bagActions = actions.filter(action => /^(drop|use|backup|talent):/.test(action.id));
   const bag = current.bag || [];
   const bagEntries = bag.map((item, index) => {
     const applicable = bagActions.filter(action => action.id.endsWith(':' + index));
     const controls = applicable.map(action => '<button class="button small" data-action="' + attr(action.id) + '" data-server-disabled="' + (action.disabled ? 'true' : 'false') + '" '
       + (action.disabled || pending || uncertainMutation ? 'disabled' : '') + (action.reason ? ' title="' + attr(action.reason) + '"' : '') + '>' + esc(action.name) + '</button>').join('');
     return { key: current.raidId + ':' + current.revision + ':' + index + ':' + item.id, item, index, count: 1,
-      state: item.protected ? '已备份' : '', actions: controls || '<span class="tiny">这件物品暂时没有可用操作。</span>' };
+      state: item.protection === 'talent' ? '已封存' : item.protection === 'both' ? '封存与备份' : item.protected ? '已备份' : '', actions: controls || '<span class="tiny">这件物品暂时没有可用操作。</span>' };
   });
   const cancelBackup = actions.find(action => action.id === 'backup:none');
-  if (cancelBackup) bagEntries.filter(entry => entry.item.protected).forEach(entry => {
+  if (cancelBackup) bagEntries.filter(entry => entry.item.protected && entry.item.protection !== 'talent').forEach(entry => {
     entry.actions += actionButton(cancelBackup.id, cancelBackup.name, cancelBackup.disabled, cancelBackup.reason, '');
   });
   renderItemZone('bag', '#raid-bag', '#bag-item-detail', bagEntries, '还没有随身收获。');
@@ -704,11 +707,16 @@ function renderRaid(current) {
     $('#event-type-label').textContent = event.typeLabel || '人物交流';
     $('#event-image').src = EVENT_ART.has(event.image) ? event.image : '/assets/generated/scholar.png';
     $('#event-image').alt = event.typeLabel || '人物交流';
+    const callback = $('#event-story-context');
+    callback.hidden = !event.story;
+    callback.className = 'story-callback';
+    callback.textContent = event.story ? (event.story.priorChoice || `${event.story.title || '校园奇遇'} · 第 ${event.story.chapter} 幕`) : '';
     renderEventChoices(event.actions || [], Boolean(current.pendingLoot?.length));
   } else {
     $('#event-title').textContent = '';
     $('#event-text').textContent = '';
     $('#event-choices').replaceChildren();
+    $('#event-story-context').hidden = true;
   }
   const pendingLoot = current.pendingLoot || [];
   const exitHint = $('#extraction-hint-text');
@@ -729,7 +737,15 @@ function renderRaid(current) {
     $('#prob-acquisition').textContent = selected.outlook.acquisition;
     $('#prob-encounter').textContent = current.event ? '正在应对' : selected.outlook.encounter;
   }
-  renderGenericActions($('#raid-actions'), actions, action => /^(drop|use|backup|take|respond|event):/.test(action.id) || (/^search(?::|$)/.test(action.id) && action.id !== searchApproach), probabilities);
+  renderGenericActions($('#raid-actions'), actions, action => /^(drop|use|backup|take|respond|event|talent):/.test(action.id) || (/^search(?::|$)/.test(action.id) && action.id !== searchApproach), probabilities);
+  const talent = current.talent;
+  const talentBox = $('#field-talent');
+  talentBox.hidden = !talent;
+  if (talent) {
+    talentBox.className = 'field-talent' + (talent.used ? ' is-used' : '');
+    const inventoryTalent = talent.id !== 'connector' && (talent.actions || []).some(action => !action.disabled);
+    talentBox.innerHTML = `<div><strong>${esc(talent.name)} · ${talent.used ? '本局已使用' : '本局可用一次'}</strong><small>${esc(talent.hint || talent.description)}</small></div>${!talent.used && inventoryTalent ? '<button type="button" class="button small" data-open-talent-bag>选择材料</button>' : ''}`;
+  }
   const blocked = Boolean(current.event || pendingLoot.length);
   $('#field-search-controls').hidden = blocked;
   const decision = $('#field-decision');
@@ -750,6 +766,7 @@ function renderResult(current) {
   const labels = { clean: '完整撤离', messy: '部分撤离', scatter: '行动失败', complete: '完整撤离', partial: '部分撤离', fail: '行动失败' };
   $('#result-title').textContent = labels[result.kind] || result.title || '本局结算';
   $('#result-summary').textContent = plainOutcome(result.summary || result.text || '');
+  $('#result-stories').innerHTML = renderStoryEntries(current.stories?.recent);
   const returned = result.returned || result.returnedItems || [...(result.archivedIds || []), ...(result.carriedIds || [])];
   const lost = result.lost || result.lostItems || result.lostIds || [];
   const catalog = itemCatalog();
@@ -775,6 +792,7 @@ function renderHub() {
   renderSetup();
   renderResearch();
   renderInventory();
+  $('#career-stories').innerHTML = renderStoryEntries(hub.stories?.chapters?.filter(row => row.state !== 'unseen'), '校园奇遇档案');
   renderWorkspaceNavigation();
 }
 
@@ -918,6 +936,11 @@ async function submitApi(path, body, label) {
     toggleBusy(false);
     render();
     if (raidActionSucceeded && view?.status === 'playing') focusRaidStep(previousRaid, body.action);
+    if (!view && path === '/api/hub/action' && /^research:(promote|talent:|milestone:)/.test(body.action || '')) {
+      const target = body.action === 'research:promote' ? $('#promotion-title')
+        : body.action.startsWith('research:talent:') ? $('.talent-owned summary') : $('#research-current-goal');
+      if (target) { target.tabIndex = -1; target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() }); }
+    }
     if (equippedItemId && equipmentPickerSlot === previousPickerSlot) {
       const cell = $$('[data-item-zone="equipment-owned"]').find(button => button.dataset.itemId === equippedItemId);
       cell?.focus({ preventScroll: true });
@@ -956,6 +979,11 @@ $('#hub-screen').addEventListener('click', event => {
   if (button && !button.disabled) submitApi('/api/hub/action', { action: button.dataset.hubAction }, '正在更新工位存档……');
 });
 $('#raid-screen').addEventListener('click', event => {
+  if (event.target.closest('[data-open-talent-bag]')) {
+    const bag = $('#raid-bag-details'); bag.open = true;
+    bag.querySelector('summary').focus({ preventScroll: true });
+    bag.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() }); return;
+  }
   const approach = event.target.closest('[data-search-approach]');
   if (approach && !approach.disabled) { searchApproach = approach.dataset.searchApproach; renderRaid(view); $('[data-search-approach=\"' + searchApproach + '\"]')?.focus({ preventScroll: true }); return; }
   const button = event.target.closest('[data-action]');

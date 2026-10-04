@@ -1,4 +1,5 @@
 import { ITEMS } from './content.js';
+import { CAREER_TALENTS, talentRankForStage, normalizeCareerTalent, careerTalentBenefits } from '../public/career-talents.js';
 
 export const EQUIPMENT_SLOTS = ['bag', 'focus', 'tool', 'device', 'storage'];
 export const DIRECTIONS = {
@@ -24,6 +25,11 @@ export const STAGES = [
   { name: '杰青', papers: 16, credit: 1200, skill: 5 },
   { name: '院士', papers: 20, credit: 1700, skill: 5 },
 ];
+// Funds go straight into the wallet: a full warehouse never swallows a milestone.
+// These are one-time earned rewards, not claims that can be refreshed or retried.
+export const PROMOTION_GRANTS = [0, 180, 220, 280, 340, 400, 460, 520, 600];
+const PROMOTION_GRANT_NAMES = ['', '自主研究启动金', '访学启动金', '独立工位基金', '联合研究启动金',
+  '课题组周转金', '前沿研究支持', '跨组探索支持', '长期研究支持'];
 export const VENUES = {
   conference: { name: 'AI 学术会议', minStage: 0, desc: '自然搜集数据、源码、算力与合作资源', risk: 0 },
   visit: { name: 'AI 实验室访学', minStage: 2, desc: '数据与源码机会较多的访学地点', risk: 0.03 },
@@ -44,13 +50,71 @@ export function normalizeResearch(value = {}, seed = 1) {
     status: ['experiment', 'submitted', 'revision', 'ready', 'rejected'].includes(raw.status) ? raw.status : 'experiment',
     reviews: number(raw.reviews), submittedRuns: number(raw.submittedRuns),
   } : null;
+  const stage = Math.min(STAGES.length - 1, number(value.stage));
+  // A legacy stage is already earned; migration never grants its rewards again.
+  // Keep a higher high-water mark if a damaged save moved the stage backwards.
+  const rewardedStage = Math.min(STAGES.length - 1, Math.max(stage, number(value.rewardedStage, stage)));
+  const milestoneStage = number(value.lastMilestone?.stage);
+  const lastMilestone = milestoneStage > 0 && milestoneStage <= stage ? {
+    stage: milestoneStage,
+    grant: number(value.lastMilestone.grant) > 0 ? PROMOTION_GRANTS[milestoneStage] : 0,
+    acknowledged: value.lastMilestone.acknowledged === true,
+  } : null;
   return {
     direction: Object.hasOwn(DIRECTIONS, value.direction) ? value.direction : 'llm',
     skills: Object.fromEntries(['engineering', 'research', 'expression'].map(key => [key, number(value.skills?.[key])])),
-    stage: Math.min(STAGES.length - 1, number(value.stage)), day: number(value.day),
+    stage, day: number(value.day), rewardedStage,
+    talent: normalizeCareerTalent(value.talent, stage), lastMilestone,
     rng: (number(value.rng, seed) >>> 0) || 1, sequence: Math.max(number(value.sequence), ...papers.map(p => number(p.id.split('-').at(-1)))), papers,
     completed: Object.fromEntries(Object.keys(PROJECTS).map(key => [key, number(value.completed?.[key])])),
     project, lastMessage: String(value.lastMessage || '带回研究材料，在这里开始第一个项目。'),
+  };
+}
+
+function talentView(research, stage = research.stage) {
+  const talent = normalizeCareerTalent(research.talent, stage);
+  if (!talent) return null;
+  const definition = CAREER_TALENTS[talent.id];
+  const benefits = careerTalentBenefits(talent);
+  const researchPerk = talent.id === 'archivist' ? `新课题初始质量 +${benefits.initialQuality}`
+    : talent.id === 'connector' ? `每篇录用论文额外支持经费 +${benefits.publicationGrant}`
+      : `每轮实验质量额外 +${benefits.experimentQuality}`;
+  return { ...definition, ...talent, perks: [definition.activeDescription, researchPerk], researchPerk };
+}
+
+function milestoneView(research, stage, grant = PROMOTION_GRANTS[stage]) {
+  const rank = talentRankForStage(stage);
+  const previousRank = talentRankForStage(stage - 1);
+  const benefits = [`${PROMOTION_GRANT_NAMES[stage]} +${grant} 经费（一次性）`];
+  if (stage === 1) benefits.push('选择一种永久科研流派，解锁自己的远征主动能力与研究专长', '微调实验与 GPU 工作站终端开放，仍需满足课题设备和能力条件');
+  if (stage === 2) benefits.push('新地点：AI 实验室访学', '数据清洗工具开放购买与装备');
+  if (stage === 3) benefits.push('进阶课题：成果与基础论文支持经费翻倍，实验算力与经费消耗同步提高', '集群远程终端开放购买与装备');
+  if (stage === 4) benefits.push('新地点：企业联合研究');
+  if (stage === 6) benefits.push('前沿课题：成果与基础论文支持经费为基础的三倍，实验算力与经费消耗同步提高');
+  if (rank > previousRank && stage > 1) {
+    const talent = talentView(research, stage);
+    benefits.push(talent ? `${talent.name}升至 ${rank} 级：${talent.researchPerk}` : `科研流派专长升至 ${rank} 级；选择后立即生效`);
+  }
+  if (stage === STAGES.length - 1) benefits.push('全部生涯阶段已达成，可以继续自己的课题与远征');
+  return { stage, stageName: STAGES[stage].name, grant, grantName: PROMOTION_GRANT_NAMES[stage],
+    talentRank: rank, benefits };
+}
+
+function progressionView(research) {
+  const talent = talentView(research);
+  const canChooseTalent = research.stage >= 1 && !talent;
+  return {
+    talent, canChooseTalent,
+    talents: Object.values(CAREER_TALENTS).map(row => {
+      const selected = talent?.id === row.id;
+      const example = talentView({ ...research, talent: row.id }, Math.max(1, research.stage));
+      return { ...example, actionId: `research:talent:${row.id}`, selected,
+        disabled: !canChooseTalent,
+        reason: selected ? '这是你的永久科研流派' : talent ? '科研流派已确定，晋升会提升现有专长' : research.stage < 1 ? '首次晋升后可选择' : '' };
+    }),
+    promotionPreview: STAGES[research.stage + 1] ? milestoneView(research, research.stage + 1) : null,
+    lastMilestone: research.lastMilestone ? { ...milestoneView(research, research.lastMilestone.stage, research.lastMilestone.grant),
+      acknowledged: research.lastMilestone.acknowledged === true } : null,
   };
 }
 
@@ -128,11 +192,11 @@ export function researchView(profile) {
     if (project.status === 'submitted') add('review', '查看审稿结果');
     if (project.status === 'ready') add('publish', '确认录用 · 发表成果');
     add('abandon', '放弃项目 · 已投入资源不返还');
-    return { ...structuredClone(research), skills: skillLevels(research), skillXp: { ...research.skills }, stageName: STAGES[research.stage].name,
+    return { ...structuredClone(research), ...progressionView(research), skills: skillLevels(research), skillXp: { ...research.skills }, stageName: STAGES[research.stage].name,
       capacity: capacity(profile), directions: DIRECTIONS, preparations, project: { ...project, target, experimentCost: cost }, templates: [], actions, nextStage: STAGES[research.stage + 1]?.name || null, promotionReasons: promotionReasons(profile) };
   }
   add('promote', '申请晋升', promotionReasons(profile));
-  return { ...structuredClone(research), skills: skillLevels(research), skillXp: { ...research.skills }, stageName: STAGES[research.stage].name,
+  return { ...structuredClone(research), ...progressionView(research), skills: skillLevels(research), skillXp: { ...research.skills }, stageName: STAGES[research.stage].name,
     capacity: capacity(profile), directions: DIRECTIONS, preparations, actions, nextStage: STAGES[research.stage + 1]?.name || null, promotionReasons: promotionReasons(profile),
     templates: Object.entries(PROJECTS).map(([type, t]) => {
       const reasons = [...requirements(profile, type, scope), ...materialReasons(profile, t.materials)];
@@ -144,9 +208,23 @@ export function researchView(profile) {
 
 export function researchAct(profile, action) {
   const research = profile.research;
-  const [verb, id] = action.split(':');
+  const [verb, id, ...extra] = String(action || '').split(':');
   const fail = reason => ({ ok: false, reason });
   const done = message => { research.lastMessage = message; return { ok: true, message }; };
+  if (verb === 'talent') {
+    if (extra.length || !Object.hasOwn(CAREER_TALENTS, id)) return fail('没有这个科研流派。');
+    if (research.stage < 1) return fail('完成首次晋升后，才能选择科研流派。');
+    if (normalizeCareerTalent(research.talent, research.stage)) return fail('科研流派已确定，后续晋升会提升现有专长，不能重新选择。');
+    research.talent = normalizeCareerTalent(id, research.stage);
+    const talent = talentView(research);
+    return done(`选择了${talent.name}：${talent.activeDescription}${talent.researchPerk}。流派永久保留，博士后与教授阶段会提升专长。`);
+  }
+  if (verb === 'milestone') {
+    if (id !== 'ack' || extra.length || !research.lastMilestone) return fail('没有待收好的晋升记录。');
+    if (research.lastMilestone.acknowledged) return { ok: true, message: '晋升记录已收好。' };
+    research.lastMilestone.acknowledged = true;
+    return done('晋升记录已收好；支持经费已到账，解锁的能力与地点会一直保留。');
+  }
   if (verb === 'prepare') {
     const output = PREPARATIONS[id];
     if (!Object.hasOwn(PREPARATIONS, id) || !number(profile.stash[id])) return fail('仓库里没有可整理的这份研究材料。');
@@ -174,15 +252,25 @@ export function researchAct(profile, action) {
     research.day += 1;
     research.project = { id: `paper-${research.sequence}`, type: id, direction: research.direction, scope,
       title: `${DIRECTIONS[research.direction].topic} · ${['基础', '进阶', '前沿'][scope]}${PROJECTS[id].name} #${research.sequence}`,
-      quality: 25 + Math.min(8, gearBonus(profile, 'literature')), runs: 0, reviews: 0, submittedRuns: 0, status: 'experiment' };
+      quality: 25 + Math.min(8, gearBonus(profile, 'literature')) + (careerTalentBenefits(normalizeCareerTalent(research.talent, research.stage))?.initialQuality || 0),
+      runs: 0, reviews: 0, submittedRuns: 0, status: 'experiment' };
     return done('课题已建立，数据与研究材料已投入。下一步需要算力卡运行实验。');
   }
   if (verb === 'promote') {
     if (research.project) return fail('先完成或放弃当前项目。');
     const reasons = promotionReasons(profile);
     if (reasons.length) return fail(reasons.join('；'));
-    research.stage += 1;
-    return done(`晋升为${STAGES[research.stage].name}。新的研究配置和场景已按身份解锁。`);
+    const stage = research.stage + 1;
+    const rewardedStage = Math.max(research.stage, number(research.rewardedStage, research.stage));
+    const grant = stage > rewardedStage ? PROMOTION_GRANTS[stage] : 0;
+    // Validate first, then move the stage and reward ledger in the same action.
+    research.stage = stage;
+    research.rewardedStage = Math.max(stage, rewardedStage);
+    research.talent = normalizeCareerTalent(research.talent, stage);
+    profile.funding += grant;
+    research.lastMilestone = { stage, grant, acknowledged: false };
+    const milestone = milestoneView(research, stage, grant);
+    return done(`晋升为${milestone.stageName}！${milestone.grantName} +${grant} 经费已到账。${stage === 1 ? '现在可以选择你的永久科研流派。' : milestone.benefits.slice(1).join('；') || '这笔经费可以自由投入课题、设备或下一次远征。'}`);
   }
   const project = research.project;
   if (!project) return fail('请先创建研究项目。');
@@ -201,7 +289,8 @@ export function researchAct(profile, action) {
     const levels = skillLevels(research);
     const setback = random(research) < 0.2 && project.runs < 2;
     const gain = (setback ? 6 : 16) + Math.min(10, levels.engineering + levels.research) + gearBonus(profile, 'experiment')
-      + (DIRECTIONS[project.direction].specialty === project.type ? 4 : 0);
+      + (DIRECTIONS[project.direction].specialty === project.type ? 4 : 0)
+      + (careerTalentBenefits(normalizeCareerTalent(research.talent, research.stage))?.experimentQuality || 0);
     project.quality = Math.min(100, project.quality + gain);
     project.runs += 1;
     project.status = 'experiment';
@@ -230,14 +319,15 @@ export function researchAct(profile, action) {
   if (verb === 'publish') {
     if (project.status !== 'ready') return fail('论文尚未通过审稿。');
     const credit = t.credit * (project.scope + 1);
+    const grant = t.grant * (project.scope + 1) + (careerTalentBenefits(normalizeCareerTalent(research.talent, research.stage))?.publicationGrant || 0);
     research.papers.push({ id: project.id, type: project.type, title: project.title, quality: project.quality, credit, day: research.day });
     research.completed[project.type] += 1;
     profile.achievement += credit;
-    profile.funding += t.grant * (project.scope + 1);
+    profile.funding += grant;
     research.skills.research += 2;
     research.skills.expression += 2;
     research.project = null;
-    return done(`论文录用，发表成果 +${credit}，研究支持经费 +${t.grant * (project.scope + 1)}。`);
+    return done(`论文录用，发表成果 +${credit}，研究支持经费 +${grant}。`);
   }
   return fail('未知的研究操作。');
 }

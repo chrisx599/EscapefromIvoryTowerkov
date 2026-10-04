@@ -3,6 +3,7 @@ import { GEAR, SHOP_ITEMS } from './loot-content.js';
 import { EQUIPMENT_SLOTS, normalizeResearch, researchView, researchAct, learnFromRaid, VENUES, skillLevels } from './research.js';
 import { createProbabilityRaid, isProbabilityDifficulty, probabilitySetup, PROBABILITY_MODE } from './probability-raid.js';
 import { createIdentity } from './identity.js';
+import { normalizeStories, storyJournal } from './academic-stories.js';
 
 export { probabilitySetup };
 
@@ -107,6 +108,7 @@ function profileDefaults(seed) {
     research: normalizeResearch({}, seed),
     venue: 'conference',
     contacts: {},
+    stories: normalizeStories(),
   };
 }
 
@@ -346,6 +348,7 @@ function normalizeVersion2(raw) {
     ...clone(source),
     identity,
     contacts: source.contacts && typeof source.contacts === 'object' && !Array.isArray(source.contacts) ? clone(source.contacts) : {},
+    stories: normalizeStories(source.stories),
     research: normalizeResearch(source.research, Number(run?.seed) || 1),
     venue: Object.hasOwn(VENUES, source.venue) ? source.venue : 'conference',
     funding: Math.max(0, Math.floor(Number(source.funding) || 0)),
@@ -539,6 +542,7 @@ export function careerView(career) {
     venue: profile.venue,
     venues: Object.entries(VENUES).map(([id, venue]) => ({ id, ...venue, disabled: profile.research.stage < venue.minStage })),
     contacts: clone(profile.contacts || {}),
+    stories: storyJournal(profile.stories),
     probabilitySetup: probabilitySetup(profile),
     storageUpgrade: storageUpgradeView(career),
     migrationNotice: profile.migrationNotice ? clone(profile.migrationNotice) : null,
@@ -636,6 +640,8 @@ export function deployProbability(career, options = {}) {
     supplies,
     network: profile.network,
     contacts: profile.contacts,
+    stories: normalizeStories(profile.stories),
+    talent: profile.research.talent,
   });
   if (run.bag.length !== supplies.length) return { ok: false, reason: '补给放不进当前背包。' };
 
@@ -694,6 +700,9 @@ export function settle(career) {
     };
   }
   career.profile.raids += 1;
+  // Choices are career memories, not backpack loot. Preserve them even when
+  // extraction fails, but never replace existing memories from a legacy run.
+  if (run.stories) career.profile.stories = normalizeStories(run.stories);
   learnFromRaid(career.profile, run);
   if (cleanOrMessy) career.profile.extracted += 1;
   const networkReport = networkAfter - networkBefore;

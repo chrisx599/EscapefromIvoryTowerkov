@@ -2,6 +2,10 @@ import { ITEMS } from './content.js';
 import { GEAR } from './loot-content.js';
 import { DIRECTIONS, skillLevels } from './research.js';
 import { likelihoodLabel, riskLabel, encounterLabel } from '../public/expedition-language.js';
+import { CAREER_TALENTS } from '../public/career-talents.js';
+import { normalizeStories, academicStoriesView, academicStoryCandidates, academicStoryWeight,
+  academicStoryCallbackReady, storyResolutionAllowed, recordAcademicStory, withAcademicStoryEcho } from './academic-stories.js';
+export { normalizeStories } from './academic-stories.js';
 
 export const PROBABILITY_MODE = 'probability';
 export const PROBABILITY_BASE_WILL = 10;
@@ -404,6 +408,77 @@ EVENT_TEMPLATES.push(
     ] },
 );
 
+const CONNECTOR_CHOICE = {
+  key: 'talent-negotiate', name: '联络派：约定合作边界', requiresTalent: 'connector', talentUse: true,
+  cost: { network: 1 }, onSuccess: { riskDelta: -4, support: 8,
+    text: '你用一笔人情把本次要求谈到了能兑现的范围。双方同意结束追问，返程接应也有了安排。' },
+};
+
+function normalizeRaidTalent(value) {
+  const id = typeof value === 'string' ? value : value?.id;
+  if (typeof id !== 'string' || !Object.hasOwn(CAREER_TALENTS, id)) return null;
+  return { id, rank: Math.floor(clamp(value?.rank || 1, 1, 3)) };
+}
+
+function talentProtectedIndex(run) {
+  const index = run.talentState?.protectedIndex;
+  return normalizeRaidTalent(run.talent)?.id === 'archivist' && run.talentState?.used === true
+    && Number.isInteger(index) && index >= 0 && RESEARCH_MATERIALS.has(run.bag?.[index]) ? index : null;
+}
+
+function talentActions(run) {
+  const talent = normalizeRaidTalent(run.talent);
+  if (!talent || talent.id === 'connector' || run.status !== 'playing') return [];
+  const blocked = run.talentState?.used ? '本次远征已经使用过专长。'
+    : run.pendingAutoExtract ? '心力已耗尽，正在自动撤离。'
+      : run.event ? '先处理眼前事件。' : run.pendingLoot?.length ? '先整理刚发现的物品。' : '';
+  return (run.bag || []).flatMap((id, index) => {
+    const archive = talent.id === 'archivist';
+    if (!(archive ? RESEARCH_MATERIALS.has(id) : ['dataset', 'src_code', 'wind'].includes(id))) return [];
+    const reason = blocked || (archive && hasGear(run, 'backup_device') && run.protectedIndex === index
+      ? '这件材料已有备份保护，可以封存另一件。' : '');
+    return [{ id: `talent:${archive ? 'archive' : 'convert'}:${index}`, kind: 'talent',
+      name: `${archive ? '封存' : '改装成算力卡'}：${itemName(id)}`, disabled: !!reason, reason,
+      cost: archive ? '使用本次远征的一次封存机会' : `消耗${itemName(id)} ×1；使用本次远征的一次改装机会`,
+      success: archive ? '即使行动失败，这件材料也能保留；丢弃或消耗它会失去保护。'
+        : '原材料被消耗，获得一张算力卡；放不下时可以整理背包。' }];
+  });
+}
+
+function talentView(run) {
+  const talent = normalizeRaidTalent(run.talent);
+  if (!talent) return null;
+  const definition = CAREER_TALENTS[talent.id];
+  const actions = talent.id === 'connector' && run.event
+    ? eventActionSpecs(run).filter(row => row.id === 'event:talent-negotiate').map(row => ({ ...row, kind: 'talent' }))
+    : talentActions(run);
+  return { ...talent, name: definition.name, activeName: definition.activeName,
+    description: definition.activeDescription, used: run.talentState?.used === true,
+    protectedIndex: talentProtectedIndex(run), actions,
+    hint: run.talentState?.used ? '本次专长已使用，下次远征恢复。'
+      : talent.id === 'connector' ? '遇到人物交涉或可以协商的奇遇时，可用人脉稳妥收口。'
+        : actions.length ? '选择一件材料，立即使用本次专长。' : '先找到一件可用的研究材料，再使用专长。' };
+}
+
+function performTalentAction(run, id, before) {
+  const action = talentActions(run).find(row => row.id === id);
+  if (!action) return responseFailure('没有这个专长行动或可用材料。');
+  if (action.disabled) return responseFailure(action.reason);
+  const [, verb, position] = id.split(':');
+  const index = Number(position);
+  const material = run.bag[index];
+  run.talentState = { ...(run.talentState || {}), used: true };
+  if (verb === 'archive') {
+    run.talentState.protectedIndex = index;
+    return commitAction(run, `封存了${itemName(material)}，任何撤离结果都能保留。`, 'talent', before,
+      { title: '封存关键材料', text: `已封存${itemName(material)}；这次机会已用完，丢弃或消耗材料会失去保护。` });
+  }
+  removeBagItem(run, index);
+  const itemsAdded = placeLoot(run, ['compute']);
+  return commitAction(run, `消耗${itemName(material)}，改装出一张算力卡。`, 'talent', before,
+    { title: '临时算力改装', text: `用${itemName(material)}改装出一张算力卡。本次改装机会已用完。`, itemsAdded });
+}
+
 function skill(run, id) {
   return Math.max(1, Math.min(10, Math.floor(Number(run.skills?.[id]) || 1)));
 }
@@ -555,6 +630,9 @@ function encounterStatus(run, riskAfter, approachId = 'steady') {
   if ((run.eventCount || 0) >= eventsLimit) return { chance: 0, reason: `本局事件已达 ${eventsLimit} 次上限。` };
   if (run.encounterCooldown) return { chance: 0, reason: '上次交涉后的下一次搜索免交涉。' };
   if (!eventPool(run).length) return { chance: 0, reason: '本局可触发的人物事件已用完。' };
+  if (academicStoryCallbackReady(run)) {
+    return { chance: 100, reason: '先前的选择有了回音。再探索一次，就会遇到这桩奇遇的后续。', guaranteed: true };
+  }
   const base = 10 + venueFor(run).baseRisk + 0.5 * riskAfter + contextModifiers(run, approachId).encounter;
   const pacing = run.encounterPacing || { dryStreak: 0, firstEventSeen: false };
   const dryStreak = Math.max(0, Number(pacing.dryStreak) || 0);
@@ -744,7 +822,8 @@ function outlookFor(probabilities, risk = probabilities.parts?.acquisition?.risk
     extraction: likelihoodLabel(probabilities.full), risk: riskLabel(risk) };
 }
 
-function eventMomentum(event, success) {
+function eventMomentum(event, success, choice = null) {
+  if (choice?.skipMomentum) return null;
   return ({ npc: ['scrutiny', 'contact'], resource: ['interference', 'lead'],
     technical: ['interference', 'repaired'], route: ['detour', 'clear'] })[event.type]?.[Number(success)] || null;
 }
@@ -822,6 +901,11 @@ export function createProbabilityRaid(options = {}) {
     pendingLoot: [],
     pendingAutoExtract: false,
     protectedIndex: null,
+    stories: normalizeStories(options.stories),
+    storyEnabled: Object.hasOwn(options, 'stories'),
+    storyRun: null,
+    talent: normalizeRaidTalent(options.talent),
+    talentState: { used: false, protectedIndex: null },
     contacts: options.contacts && typeof options.contacts === 'object' ? clone(options.contacts) : {},
     contactUpdates: {},
     stats: { will: willMax, willMax, network: Math.max(0, Math.floor(Number(options.network) || 0)), risk: 0 },
@@ -917,6 +1001,8 @@ function countBagItem(run, id) {
 }
 
 function requirementsReason(run, choice) {
+  if (choice.requiresTalent && normalizeRaidTalent(run.talent)?.id !== choice.requiresTalent) return '需要对应的生涯专长。';
+  if (choice.talentUse && run.talentState?.used) return '本次远征已经使用过专长。';
   if (choice.requiresAny?.length && !choice.requiresAny.some(id => countBagItem(run, id) > 0)) {
     return `需要背包里有${choice.requiresAny.map(itemName).join('或')}。`;
   }
@@ -1014,6 +1100,7 @@ function effectSummary(run, event, choice, effect = {}, fallback = "") {
   }
   const trustDelta = Number(effect.trustDelta) || 0;
   if (event.type === "npc" && trustDelta) actuals.push("人物信任 " + (trustDelta > 0 ? "+" : "") + round1(trustDelta));
+  if (Number.isInteger(effect.routeDepth) && effect.routeDepth < expeditionState(run).depth) actuals.push('回到靠近出口的位置');
   const story = effect.text || fallback || "行动已结算。";
   return actuals.length ? story + " 实际后果：" + actuals.join("；") + "。" : story;
 }
@@ -1030,8 +1117,8 @@ function eventAction(run, choice) {
   const reason = choice.exit && run.pendingLoot?.length ? '先整理本轮发现，再选择撤离。' : requirementsReason(run, choice);
   const probability = eventChoiceProbability(run, choice);
   const event = run.event;
-  const successMomentum = !choice.exit && eventMomentum(event, true);
-  const failureMomentum = !choice.exit && eventMomentum(event, false);
+  const successMomentum = !choice.exit && eventMomentum(event, true, choice);
+  const failureMomentum = !choice.exit && eventMomentum(event, false, choice);
   const success = effectSummary(run, event, choice, choiceEffect(choice, 'success'), '行动成功。')
     + (successMomentum ? ` 后续两次搜索：${MOMENTUM[successMomentum].name}。${MOMENTUM[successMomentum].description}` : '');
   const failure = choice.check
@@ -1065,7 +1152,9 @@ function eventAction(run, choice) {
 function eventActionSpecs(run) {
   const event = run.event;
   if (!event) return [];
-  const choices = [...event.choices, EVENT_LEAVE_CHOICE];
+  const choices = [...event.choices];
+  if (!event.story && event.type === 'npc' && normalizeRaidTalent(run.talent)?.id === 'connector') choices.push(CONNECTOR_CHOICE);
+  choices.push(EVENT_LEAVE_CHOICE);
   return choices.map(choice => eventAction(run, choice));
 }
 
@@ -1080,6 +1169,7 @@ function removeItemCount(run, id, amount) {
 }
 
 function applyEventCost(run, choice) {
+  if (choice.talentUse) run.talentState = { ...(run.talentState || {}), used: true };
   const cost = choice.cost || {};
   run.stats.will = round1(Math.max(0, run.stats.will - (Number(cost.will) || 0)));
   run.stats.network = Math.max(0, run.stats.network - (Number(cost.network) || 0));
@@ -1107,6 +1197,10 @@ function applyEventEffect(run, event, effect = {}, outcome = 'success') {
   const before = { risk: Number(run.stats.risk) || 0, will: Number(run.stats.will) || 0 };
   run.stats.risk = round1(clamp(before.risk + (Number(effect.riskDelta) || 0), 0, 100));
   run.stats.will = round1(clamp(before.will + (Number(effect.willDelta) || 0), 0, run.stats.willMax));
+  if (Number.isInteger(effect.routeDepth)) {
+    run.expedition = expeditionState(run);
+    run.expedition.depth = Math.floor(clamp(effect.routeDepth, 0, 4));
+  }
   if (effect.support != null) run.support = Math.max(Number(run.support) || 0, Number(effect.support) >= 8 ? 8 : 0);
   if (Number(effect.networkDelta)) run.stats.network = Math.max(0, Number(run.stats.network) + Number(effect.networkDelta));
   const added = [];
@@ -1126,7 +1220,10 @@ function applyEventEffect(run, event, effect = {}, outcome = 'success') {
 function resolveEvent(run, id) {
   const event = run.event;
   const actionId = id.slice('event:'.length);
-  const choice = actionId === 'leave' ? EVENT_LEAVE_CHOICE : event.choices.find(row => row.key === actionId);
+  if (!storyResolutionAllowed(run, event)) return responseFailure('这段奇遇已经结算，不能重复领取结果。');
+  const choice = actionId === 'leave' ? EVENT_LEAVE_CHOICE
+    : actionId === CONNECTOR_CHOICE.key && !event.story && event.type === 'npc' && normalizeRaidTalent(run.talent)?.id === 'connector'
+      ? CONNECTOR_CHOICE : event.choices.find(row => row.key === actionId);
   if (!choice) return responseFailure('当前事件没有这个处理方案。');
   const publicAction = eventAction(run, choice);
   if (publicAction.disabled) return responseFailure(publicAction.reason || '当前条件不足。');
@@ -1149,7 +1246,8 @@ function resolveEvent(run, id) {
   if (event.type === 'npc' && choice.xp !== false) run.history.push(`npc:reply:${event.id}`);
   run.event = null;
   run.encounterCooldown = true;
-  const momentumId = eventMomentum(event, success);
+  recordAcademicStory(run, event, choice, success);
+  const momentumId = eventMomentum(event, success, choice);
   run.expedition = expeditionState(run);
   if (momentumId) run.expedition.effect = { id: momentumId, remainingSearches: 2 };
   const description = success ? publicAction.success : publicAction.failure;
@@ -1170,6 +1268,8 @@ function eventView(run) {
     title: event.title,
     text: event.text,
     kind: event.type,
+    ...(event.story ? { story: clone(event.story) } : {}),
+    ...(event.storyEcho ? { storyEcho: event.storyEcho } : {}),
     typeLabel: EVENT_TYPE_LABELS[event.type] || '人物事件',
     tone: event.tone || 'social',
     image: event.image || '/assets/generated/scholar.png',
@@ -1192,6 +1292,7 @@ function eventPacingView(run, probabilities) {
       ? Math.max(1, 4 - Math.max(0, Number(pacing.dryStreak) || 0))
       : Math.max(1, 2 - Math.max(0, Number(pacing.dryStreak) || 0));
   }
+  if (searchesUntilGuaranteed !== null && academicStoryCallbackReady(run)) searchesUntilGuaranteed = 1;
   return {
     searchesUntilGuaranteed,
     eventsUsed,
@@ -1274,6 +1375,7 @@ function actionView(run) {
       if (RESEARCH_MATERIALS.has(id)) addAction(actions, `backup:${index}`, `保护：${itemName(id)}`, false, '', 'backup');
     });
   }
+  actions.push(...talentActions(run));
   return actions;
 }
 
@@ -1316,12 +1418,17 @@ export function probabilityRaidView(run) {
       network: Math.max(0, Math.floor(Number(run.stats?.network) || 0)),
       risk: round1(run.stats?.risk),
     },
-    bag: (run.bag || []).map((id, index) => publicItem(id, index, protectedIndex)),
+    bag: (run.bag || []).map((id, index) => ({ ...publicItem(id, index, protectedIndex),
+      protected: index === protectedIndex || index === talentProtectedIndex(run),
+      protection: index === protectedIndex && index === talentProtectedIndex(run) ? 'both'
+        : index === protectedIndex ? 'equipment' : index === talentProtectedIndex(run) ? 'talent' : null })),
     bagCap: Math.max(0, Number(run.bagCap) || PROBABILITY_BASE_BAG_CAP),
     bagUsed: round1(bagWeight(run)),
     probabilities,
     outlook: outlookFor(probabilities, run.stats?.risk),
     expedition: expeditionView(run),
+    stories: academicStoriesView(run),
+    talent: talentView(run),
     encounterPacing: eventPacingView(run, probabilities),
     lastAction: run.lastAction ? clone(run.lastAction) : null,
     event: eventView(run),
@@ -1373,6 +1480,14 @@ function rollPercent(run, percent) {
 }
 
 function chooseEvent(run) {
+  const stories = academicStoryCandidates(run);
+  if (stories.length) {
+    const total = stories.reduce((sum, event) => sum + academicStoryWeight(run, event), 0);
+    let draw = nextRandom(run) * total;
+    const event = stories.find(candidate => { draw -= academicStoryWeight(run, candidate); return draw < 0; }) || stories.at(-1);
+    if (!run.storyRun) run.storyRun = { id: event.story.id, initialChapter: event.story.chapter - 1 };
+    return event;
+  }
   const pool = eventPool(run);
   if (!pool.length) return null;
   const weights = contextModifiers(run).condition.events || {};
@@ -1388,7 +1503,7 @@ function chooseEvent(run) {
   };
   chosen.choices = clone(event.choices || []);
   chosen.typeLabel = EVENT_TYPE_LABELS[event.type] || '人物事件';
-  return chosen;
+  return withAcademicStoryEcho(run, chosen);
 }
 
 function validProtectedItem(run) {
@@ -1404,23 +1519,23 @@ function finishExtraction(run, automatic = false) {
   const kind = draw < probabilities.fail ? 'scatter'
     : draw < probabilities.fail + probabilities.partial ? 'messy' : 'clean';
   const protectedItem = validProtectedItem(run);
-  const protectedIndex = protectedItem?.index ?? -1;
-  const protectedId = protectedItem?.id || null;
+  const archivedIndexes = new Set([protectedItem?.index, talentProtectedIndex(run)].filter(index => Number.isInteger(index) && index >= 0));
+  const protectedId = protectedItem?.id || run.bag?.[talentProtectedIndex(run)] || null;
   const bag = [...(run.bag || [])];
   let lostIndex = -1;
   if (kind === 'scatter') {
     // Failure loses all unprotected carried items, including unused supplies.
   } else if (kind === 'messy') {
     const candidates = bag.map((id, index) => ({ id, index }))
-      .filter(item => item.index !== protectedIndex && RESEARCH_MATERIALS.has(item.id))
+      .filter(item => !archivedIndexes.has(item.index) && RESEARCH_MATERIALS.has(item.id))
       .sort((a, b) => itemValue(a.id) - itemValue(b.id) || a.index - b.index);
     if (candidates.length) lostIndex = candidates[0].index;
   }
 
-  const archivedIds = protectedId ? [protectedId] : [];
-  const carriedIds = kind === 'scatter' ? [] : bag.filter((id, index) => index !== protectedIndex && index !== lostIndex);
+  const archivedIds = [...archivedIndexes].map(index => bag[index]);
+  const carriedIds = kind === 'scatter' ? [] : bag.filter((id, index) => !archivedIndexes.has(index) && index !== lostIndex);
   const lostIds = kind === 'scatter'
-    ? bag.filter((_, index) => index !== protectedIndex)
+    ? bag.filter((_, index) => !archivedIndexes.has(index))
     : lostIndex >= 0 ? [bag[lostIndex]] : [];
   const noMaterialLoss = kind === 'messy' && lostIndex < 0;
   run.result = {
@@ -1437,7 +1552,7 @@ function finishExtraction(run, automatic = false) {
     noMaterialLoss,
     summary: kind === 'clean' ? '完整带回：背包物品全部保留。'
       : kind === 'messy' ? noMaterialLoss ? '部分带回：没有未保护的研究材料需要损失。' : `部分带回：仅损失 1 份未保护材料${lostIds[0] ? `「${itemName(lostIds[0])}」` : ''}。`
-        : `行动失败：未保护物品损失${protectedId ? `；「${itemName(protectedId)}」已由备份设备保护` : ''}。`,
+        : `行动失败：未保护物品损失${archivedIds.length ? `；${archivedIds.map(id => `「${itemName(id)}」`).join('、')}已由备份或封存保护` : ''}。`,
   };
   run.status = 'ended';
   run.pendingLoot = [];
@@ -1456,6 +1571,8 @@ function removeBagItem(run, index) {
   const [id] = run.bag.splice(index, 1);
   if (run.protectedIndex === index) run.protectedIndex = null;
   else if (Number.isInteger(run.protectedIndex) && run.protectedIndex > index) run.protectedIndex -= 1;
+  if (run.talentState?.protectedIndex === index) run.talentState.protectedIndex = null;
+  else if (Number.isInteger(run.talentState?.protectedIndex) && run.talentState.protectedIndex > index) run.talentState.protectedIndex -= 1;
   return id;
 }
 
@@ -1532,6 +1649,8 @@ export function actProbabilityRaid(run, action) {
   if (!id) return responseFailure('无效的行动。');
   const before = { risk: Number(run.stats?.risk) || 0, will: Number(run.stats?.will) || 0, network: Number(run.stats?.network) || 0 };
 
+  if (id.startsWith('talent:')) return performTalentAction(run, id, before);
+
   if (id.startsWith('event:')) {
     if (!run.event || !Array.isArray(run.event.choices)) return responseFailure('当前没有可处理的规则事件。');
     const result = resolveEvent(run, id);
@@ -1607,9 +1726,7 @@ export function actProbabilityRaid(run, action) {
     if (!/^\d+$/.test(rawIndex)) return responseFailure('物品位置无效。');
     const index = Number(rawIndex);
     if (index < 0 || index >= run.bag.length) return responseFailure('背包里没有这个位置的物品。');
-    const [removed] = run.bag.splice(index, 1);
-    if (run.protectedIndex === index) run.protectedIndex = null;
-    else if (Number.isInteger(run.protectedIndex) && run.protectedIndex > index) run.protectedIndex -= 1;
+    const removed = removeBagItem(run, index);
     log(run, 'loot', `你丢弃了${itemName(removed)}；风险不变。`);
     finishIfAutomatic(run);
     return { ...commitAction(run, '', run.status === 'ended' ? 'result' : 'inventory', before, {

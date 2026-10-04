@@ -1,6 +1,6 @@
 # 逃离象牙塔夫 · Escape from Ivory Towerkov
 
-《逃离象牙塔夫》（Escape from Ivory Towerkov）是一款科研题材的概率搜打撤与生涯游戏。当前版本 v0.7.0，采用正式科研工位和概率远征，无需 AI 模型或 Phaser。
+《逃离象牙塔夫》（Escape from Ivory Towerkov）是一款科研题材的概率搜打撤与生涯游戏。当前版本 v0.8.0，采用正式科研工位和概率远征，无需 AI 模型或 Phaser。
 
 ```sh
 npm install
@@ -16,7 +16,9 @@ npm start
 - 前两次有效搜索内至少一次事件；处理后冷却一次搜索，每局最多四次事件。
 - 撤离后整理收获，再投入实验、投稿、返修、论文录用与晋升。
 - 已穿戴装备不占仓库，备用副本占用。仓库可从 40 扩至 120，每次增加 20。
-- 默认只显示材料发现机会、探索压力和完整带回把握；详细概率可展开查看。
+- 风险与机会用定性描述呈现，不显示数字概率；消耗、收获与因果后续可以查看。
+- 校园奇遇会记住你的选择。未完的故事会延续到之后的远征，已完成的故事保存在档案。
+- 晋升立即获得一次性支持经费；首次晋升选择档案派、联络派或巧匠派，得到每次远征可用的主动专长和研究加成。
 
 当前入口为 `public/index.html`，规则主规格为 [REVAMP.md](docs/REVAMP.md)，研究规则为 [RESEARCH.md](docs/RESEARCH.md)，文档导航为 [SPEC.md](docs/SPEC.md)。
 
@@ -31,6 +33,7 @@ npm start
 ```sh
 npm test
 npm run test:browser
+npm run test:gameplay:browser
 ```
 
 测试使用独立存档和本地服务，不修改玩家存档。浏览器验证包括仓库扩容、装备容量、断网恢复、远征、真实论文录用与晋升、桌面和手机界面。
@@ -38,3 +41,7 @@ npm run test:browser
 ## UI 优化
 
 科研工位视觉与交互改进、跨平台浏览器测试说明见 [UI_REFINEMENT.md](docs/UI_REFINEMENT.md)。
+
+## 玩法更新
+
+v0.8.0 的故事分支、专长、奖励与存档规则见 [GAMEPLAY_V4.md](docs/GAMEPLAY_V4.md)。
