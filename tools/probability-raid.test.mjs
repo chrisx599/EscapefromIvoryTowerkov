@@ -418,7 +418,8 @@ test('current pacing guarantees a real event by the second eligible search, then
   assert.equal(view.encounterPacing.noEventStreak, 1);
   assert.equal(view.encounterPacing.searchesUntilGuaranteed, 1);
   assert.equal(view.probabilities.encounter, 100);
-  assert.match(view.probabilities.encounterReason, /100%/);
+  assert.match(view.probabilities.encounterReason, /遇到一个新情况/);
+  assert.doesNotMatch(view.probabilities.encounterReason, /%|百分点/);
 
   assert.equal(actProbabilityRaid(run, 'search').ok, true);
   assert.ok(run.event, 'the guarantee triggers an actual event, not just a displayed rate');
@@ -478,8 +479,9 @@ test('current action previews use normalized outcomes, costs, clamped effects, a
   assert.match(action.cost, /人脉 −1/);
   assert.match(action.cost, /算力卡 ×1/);
   assert.match(action.success, /风险 -10/);
-  assert.match(action.success, /接应支持 \+8/);
-  assert.match(action.success, /部分带回率 \d+(?:\.\d+)?%→\d+(?:\.\d+)?%/);
+  assert.match(action.success, /接应就绪/);
+  assert.match(action.success, /返程更稳妥/);
+  assert.doesNotMatch(action.success, /%|百分点/);
   assert.match(action.success, /获得方向风向/);
   assert.match(action.failure, /风险 \+1/);
   assert.match(action.failure, /心力 -1/);
@@ -506,12 +508,13 @@ test('current action previews use normalized outcomes, costs, clamped effects, a
   });
   const successAction = probabilityRaidView(successRun).event.actions.find(row => row.id === 'event:claim');
   assert.equal(successAction.probability, 100);
-  assert.match(successAction.failure, /无检定/);
+  assert.match(successAction.failure, /无需检定/);
   assert.equal(actProbabilityRaid(successRun, 'event:claim').eventSuccess, true);
   assert.equal(successRun.stats.risk, 20);
   assert.equal(successRun.support, 8);
   assert.deepEqual(successRun.bag, ['wind']);
-  assert.match(successRun.lastAction.text, /部分带回率/);
+  assert.match(successRun.lastAction.text, /返程更稳妥/);
+  assert.doesNotMatch(successRun.lastAction.text, /%|百分点/);
   assert.equal(successRun.lastAction.itemsAdded[0].id, 'wind');
 });
 
