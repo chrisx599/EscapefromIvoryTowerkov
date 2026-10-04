@@ -1,0 +1,20 @@
+{
+  "name": "xuefa",
+  "version": "0.7.0",
+  "private": true,
+  "type": "module",
+  "description": "《学阀》—— 纯规则概率搜打撤与科研生涯",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test tools/career.test.mjs tools/item-art.test.mjs tools/research.test.mjs tools/probability-raid.test.mjs tools/probability-api.test.mjs",
+    "test:browser": "node tools/probability-browser.mjs",
+    "test:probability": "node tools/probability-browser.mjs",
+    "test:probability:api": "node --test tools/probability-api.test.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.51.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

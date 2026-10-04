@@ -1,0 +1,26 @@
+[
+  {
+    "id": "lightweight_laptop",
+    "file": "lightweight_laptop.png",
+    "prompt": "Use case: stylized-concept. Asset type: transparent PNG inventory item icon for a top-down academic conference pixel RPG. ONE centered isolated object or coherent small item bundle, clearly recognizable silhouette, occupies about 75% of a SQUARE canvas with transparent padding. Cozy mature pixel art at roughly 64x64 visual resolution, big clean pixel clusters, simple readable shapes, restrained highlights, muted teal, walnut brown, cream and aged brass palette matching existing game. Orthographic three-quarter item view. No ground or room, no pedestal, no glow or vignette, genuine alpha transparency outside silhouette. No text, no numbers, no labels, no brands/logos, no watermark. Subject: a slim open dark teal research laptop with a blank cream-and-teal screen, no logo or markings, rendered as a simpler smaller silhouette than a workstation.",
+    "width": 1254,
+    "height": 1254,
+    "source": "C:\\Users\\jack\\.codex\\generated_images\\01a0fde5-5a1e-7e53-b6b0-6fada4bbe200\\exec-89ecc95a-3be3-4a77-a49a-4f7808372423.png"
+  },
+  {
+    "id": "gpu_workstation",
+    "file": "gpu_workstation.png",
+    "prompt": "Use case: stylized-concept. Asset type: transparent PNG inventory item icon for a top-down academic conference pixel RPG. ONE centered isolated object or coherent small item bundle, clearly recognizable silhouette, occupies about 75% of a SQUARE canvas with transparent padding. Cozy mature pixel art at roughly 64x64 visual resolution, big clean pixel clusters, simple readable shapes, restrained highlights, muted teal, walnut brown, cream and aged brass palette matching existing game. Orthographic three-quarter item view. No ground or room, no pedestal, no glow or vignette, genuine alpha transparency outside silhouette. No text, no numbers, no labels, no brands/logos, no watermark. Subject: a compact powerful GPU workstation bundle: sturdy dark teal computer tower with clear brass ventilation and fan accents beside one small blank teal monitor. Make the tower visibly more substantial and powerful than a lightweight laptop. No logos, text, numbers, or markings.",
+    "width": 1254,
+    "height": 1254,
+    "source": "C:\\Users\\jack\\.codex\\generated_images\\01a0fde5-5a1e-7e53-b6b0-6fada4bbe200\\exec-a4c3e641-1358-4208-a506-f185828820d8.png"
+  },
+  {
+    "id": "remote_terminal",
+    "file": "remote_terminal.png",
+    "prompt": "Use case: stylized-concept. Asset type: transparent PNG inventory item icon for a top-down academic conference pixel RPG. ONE centered isolated object or coherent small item bundle, clearly recognizable silhouette, occupies about 75% of a SQUARE canvas with transparent padding. Cozy mature pixel art at roughly 64x64 visual resolution, big clean pixel clusters, simple readable shapes, restrained highlights, muted teal, walnut brown, cream and aged brass palette matching existing game. Orthographic three-quarter item view. No ground or room, no pedestal, no glow or vignette, genuine alpha transparency outside silhouette. Subject: dark teal rugged portable remote-computing terminal with an integrated keyboard, a small dark screen containing only a few plain amber rectangular status lights, and a short stubby antenna folded flat against the case. The rugged case and folded network antenna communicate remote access to a distant computer cluster. No charts, diagrams, icons, symbols, letters, numbers, labels, brands/logos, or watermark.",
+    "width": 1254,
+    "height": 1254,
+    "source": "C:\\Users\\jack\\.codex\\generated_images\\01a0fde5-5a1e-7e53-b6b0-6fada4bbe200\\exec-f098ed4a-08e0-4d9d-957c-ff08434b2cbc.png"
+  }
+]

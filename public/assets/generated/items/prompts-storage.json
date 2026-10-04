@@ -1,0 +1,26 @@
+[
+  {
+    "id": "portable_ssd",
+    "file": "portable_ssd.png",
+    "prompt": "Use case: stylized-concept\nAsset type: transparent PNG inventory item icon for a top-down academic conference pixel RPG.\nPrimary request: Create a small teal portable solid-state drive with a short neatly coiled cable and a brass connector, clearly recognizable as a compact data storage item.\nSubject: One isolated centered portable SSD and its short coiled cable with brass connector; keep the silhouette simple and readable.\nStyle/medium: Cozy mature pixel art at roughly 64x64 visual resolution, big clean pixel clusters, simple readable shapes, restrained highlights.\nComposition/framing: Orthographic three-quarter item view; one coherent item occupying about 75% of a square canvas with transparent padding.\nColor palette: Muted teal, walnut brown, cream, aged brass, matching an academic conference pixel RPG.\nScene/backdrop: Genuine transparent background only; no ground, room, pedestal, glow, or vignette.\nConstraints: No lettering, text, numbers, labels, brands, logos, or watermark.",
+    "width": 1254,
+    "height": 1254,
+    "source": "C:\\Users\\jack\\.codex\\generated_images\\01a0fde5-ed1e-7790-8aa7-f69408aab1ad\\exec-f911f2ed-4778-46c8-921b-899593720431.png"
+  },
+  {
+    "id": "encrypted_ssd",
+    "file": "encrypted_ssd.png",
+    "prompt": "Use case: stylized-concept\nAsset type: transparent PNG inventory item icon for a top-down academic conference pixel RPG.\nPrimary request: Create a compact dark teal metal solid-state drive with a small generic brass padlock emblem inset into its case, communicating encrypted research data storage.\nSubject: One isolated centered compact metal SSD; a small brass padlock emblem is inset on its casing, generic and unbranded.\nStyle/medium: Cozy mature pixel art at roughly 64x64 visual resolution, big clean pixel clusters, simple readable shapes, restrained highlights.\nComposition/framing: Orthographic three-quarter item view; one object occupying about 75% of a square canvas with transparent padding.\nColor palette: Muted teal, walnut brown, cream, aged brass, matching an academic conference pixel RPG.\nScene/backdrop: Genuine transparent background only; no ground, room, pedestal, glow, or vignette.\nConstraints: No branding, lettering, text, numbers, labels, logos, or watermark.",
+    "width": 1254,
+    "height": 1254,
+    "source": "C:\\Users\\jack\\.codex\\generated_images\\01a0fde5-ed1e-7790-8aa7-f69408aab1ad\\exec-9868245f-bde2-41d7-a19e-fa34358c11b5.png"
+  },
+  {
+    "id": "backup_device",
+    "file": "backup_device.png",
+    "prompt": "Use case: stylized-concept\nAsset type: transparent PNG inventory item icon for a top-down academic conference pixel RPG.\nPrimary request: Create one small dual-slot research backup drive dock: a simple rectangular teal base with exactly two visible top slots, each holding one cream and brass removable data cartridge.\nSubject: One coherent compact device with precisely two cartridges seated in its two slots; clear clean silhouette, no cables or loose parts.\nStyle/medium: Cozy mature pixel art at roughly 64x64 visual resolution, large clean pixel clusters, simple readable shapes, restrained highlights, crisp pixel edges.\nComposition/framing: Orthographic three-quarter item view; centered device occupying about 75% of a square canvas with transparent padding.\nColor palette: Muted teal, walnut brown, cream, aged brass only, matching an academic conference pixel RPG.\nScene/backdrop: Genuine transparent background only; no ground, room, pedestal, glow, or vignette.\nConstraints: No stray pixels, color fringes, red or green edge specks, words, lettering, text, numbers, labels, brands, logos, or watermark.",
+    "width": 1254,
+    "height": 1254,
+    "source": "C:\\Users\\jack\\.codex\\generated_images\\01a0fde5-ed1e-7790-8aa7-f69408aab1ad\\exec-124a8ac1-627b-410d-a350-23a7157f508a.png"
+  }
+]

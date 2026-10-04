@@ -1,0 +1,26 @@
+[
+  {
+    "id": "literature_assistant",
+    "file": "literature_assistant.png",
+    "prompt": "Use case: stylized-concept\nAsset type: transparent PNG inventory item icon for a top-down academic conference pixel RPG.\nPrimary request: create one centered, isolated research tool icon.\nSubject: a small cream e-reader with a dark teal frame. Its screen shows a mostly blank book page layout: one simple pale-blue geometric illustration block, two small square page markers, and a tiny aged-brass bookmark ribbon symbol at the page corner.\nStyle/medium: cozy mature pixel art at roughly 64x64 visual resolution, big clean pixel clusters, simple readable shapes, restrained highlights.\nComposition/framing: orthographic three-quarter item view; e-reader occupies about 75% of a square canvas with transparent padding.\nColor palette: muted teal, walnut brown, cream and aged brass palette matching existing game.\nScene/backdrop: none; no ground, room, pedestal, glow or vignette.\nConstraints: genuine alpha transparency. No text, pseudo-writing, letters, numbers, labels, brands, logos or watermark. No horizontal strokes or rows resembling text; page details must be isolated geometric blocks only.",
+    "width": 1254,
+    "height": 1254,
+    "source": "C:\\Users\\jack\\.codex\\generated_images\\01a0fde5-a621-7e91-8b3e-d50b45ec9391\\exec-d6fd84f6-cc89-4f65-9a71-390133ed147e.png"
+  },
+  {
+    "id": "experiment_tracker",
+    "file": "experiment_tracker.png",
+    "prompt": "Use case: stylized-concept\nAsset type: transparent PNG inventory item icon for a top-down academic conference pixel RPG.\nPrimary request: create one centered, isolated research tool icon.\nSubject: a compact dark teal handheld research tracker, shown from a clear orthographic three-quarter front view. It has a cream display with only three abstract tiny chart shapes (a short bar chart, one pie-chart wedge, and a small line plot) and exactly two small aged-brass controls, both placed beneath the display.\nStyle/medium: cozy mature pixel art at roughly 64x64 visual resolution, big clean pixel clusters, simple readable shapes, restrained highlights.\nComposition/framing: device occupies about 75% of a square canvas with transparent padding.\nColor palette: muted teal, walnut brown, cream and aged brass palette matching existing game.\nScene/backdrop: none; no ground, room, pedestal, glow or vignette.\nConstraints: genuine alpha transparency. No text, pseudo-writing, letters, digits, labels, brands, logos or watermark. The dark teal side panel is plain and has no extra buttons, controls, switches, ports or protrusions.",
+    "width": 1254,
+    "height": 1254,
+    "source": "C:\\Users\\jack\\.codex\\generated_images\\01a0fde5-a621-7e91-8b3e-d50b45ec9391\\exec-dbecd561-c233-4e99-9288-8672ce4df3b2.png"
+  },
+  {
+    "id": "data_cleaner",
+    "file": "data_cleaner.png",
+    "prompt": "Use case: stylized-concept\nAsset type: transparent PNG inventory item icon for a top-down academic conference pixel RPG.\nPrimary request: create one centered, isolated research tool icon for data filtering.\nSubject: a small dark teal digital tool cartridge with a clear abstract cream funnel icon on its front and three small blue data squares entering the wide top of the funnel.\nStyle/medium: cozy mature pixel art at roughly 64x64 visual resolution, big clean pixel clusters, simple readable shapes, restrained highlights.\nComposition/framing: orthographic three-quarter item view; cartridge and its bold filtering symbol occupy about 75% of a square canvas with transparent padding.\nColor palette: muted teal, walnut brown, cream and aged brass palette matching existing game.\nScene/backdrop: none; no ground, room, pedestal, glow or vignette.\nConstraints: genuine alpha transparency. No text, pseudo-writing, letters, numbers, labels, brands, logos or watermark. Keep the funnel and three blue squares large and simple so data filtering is immediately recognizable.",
+    "width": 1254,
+    "height": 1254,
+    "source": "C:\\Users\\jack\\.codex\\generated_images\\01a0fde5-a621-7e91-8b3e-d50b45ec9391\\exec-124f89a1-d72e-42fd-8be4-ed10fcf875b4.png"
+  }
+]
