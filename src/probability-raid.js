@@ -2,6 +2,13 @@ import { ITEMS } from './content.js';
 import { GEAR } from './loot-content.js';
 import { DIRECTIONS, skillLevels } from './research.js';
 import { likelihoodLabel, riskLabel, encounterLabel } from '../public/expedition-language.js';
+import { CAREER_TALENTS } from '../public/career-talents.js';
+import { prepareSurpriseEncounter } from './encounter-surprises.js';
+import { RAID_BALANCE_VERSION, RAID_DIFFICULTIES, raidSearchProbability, raidRiskAfterSearch,
+  raidExtractionProbabilities, raidEventProbability, raidExtraDropChance } from './raid-balance.js';
+import { normalizeStories, academicStoriesView, academicStoryCandidates, academicStoryWeight,
+  academicStoryCallbackReady, storyResolutionAllowed, recordAcademicStory, withAcademicStoryEcho } from './academic-stories.js';
+export { normalizeStories } from './academic-stories.js';
 
 export const PROBABILITY_MODE = 'probability';
 export const PROBABILITY_BASE_WILL = 10;
@@ -404,6 +411,77 @@ EVENT_TEMPLATES.push(
     ] },
 );
 
+const CONNECTOR_CHOICE = {
+  key: 'talent-negotiate', name: '联络派：约定合作边界', requiresTalent: 'connector', talentUse: true,
+  cost: { network: 1 }, onSuccess: { riskDelta: -4, support: 8,
+    text: '你用一笔人情把本次要求谈到了能兑现的范围。双方同意结束追问，返程接应也有了安排。' },
+};
+
+function normalizeRaidTalent(value) {
+  const id = typeof value === 'string' ? value : value?.id;
+  if (typeof id !== 'string' || !Object.hasOwn(CAREER_TALENTS, id)) return null;
+  return { id, rank: Math.floor(clamp(value?.rank || 1, 1, 3)) };
+}
+
+function talentProtectedIndex(run) {
+  const index = run.talentState?.protectedIndex;
+  return normalizeRaidTalent(run.talent)?.id === 'archivist' && run.talentState?.used === true
+    && Number.isInteger(index) && index >= 0 && RESEARCH_MATERIALS.has(run.bag?.[index]) ? index : null;
+}
+
+function talentActions(run) {
+  const talent = normalizeRaidTalent(run.talent);
+  if (!talent || talent.id === 'connector' || run.status !== 'playing') return [];
+  const blocked = run.talentState?.used ? '本次远征已经使用过专长。'
+    : run.pendingAutoExtract ? '心力已耗尽，正在自动撤离。'
+      : run.event ? '先处理眼前事件。' : run.pendingLoot?.length ? '先整理刚发现的物品。' : '';
+  return (run.bag || []).flatMap((id, index) => {
+    const archive = talent.id === 'archivist';
+    if (!(archive ? RESEARCH_MATERIALS.has(id) : ['dataset', 'src_code', 'wind'].includes(id))) return [];
+    const reason = blocked || (archive && hasGear(run, 'backup_device') && run.protectedIndex === index
+      ? '这件材料已有备份保护，可以封存另一件。' : '');
+    return [{ id: `talent:${archive ? 'archive' : 'convert'}:${index}`, kind: 'talent',
+      name: `${archive ? '封存' : '改装成算力卡'}：${itemName(id)}`, disabled: !!reason, reason,
+      cost: archive ? '使用本次远征的一次封存机会' : `消耗${itemName(id)} ×1；使用本次远征的一次改装机会`,
+      success: archive ? '即使行动失败，这件材料也能保留；丢弃或消耗它会失去保护。'
+        : '原材料被消耗，获得一张算力卡；放不下时可以整理背包。' }];
+  });
+}
+
+function talentView(run) {
+  const talent = normalizeRaidTalent(run.talent);
+  if (!talent) return null;
+  const definition = CAREER_TALENTS[talent.id];
+  const actions = talent.id === 'connector' && run.event
+    ? eventActionSpecs(run).filter(row => row.id === 'event:talent-negotiate').map(row => ({ ...row, kind: 'talent' }))
+    : talentActions(run);
+  return { ...talent, name: definition.name, activeName: definition.activeName,
+    description: definition.activeDescription, used: run.talentState?.used === true,
+    protectedIndex: talentProtectedIndex(run), actions,
+    hint: run.talentState?.used ? '本次专长已使用，下次远征恢复。'
+      : talent.id === 'connector' ? '遇到人物交涉或可以协商的奇遇时，可用人脉稳妥收口。'
+        : actions.length ? '选择一件材料，立即使用本次专长。' : '先找到一件可用的研究材料，再使用专长。' };
+}
+
+function performTalentAction(run, id, before) {
+  const action = talentActions(run).find(row => row.id === id);
+  if (!action) return responseFailure('没有这个专长行动或可用材料。');
+  if (action.disabled) return responseFailure(action.reason);
+  const [, verb, position] = id.split(':');
+  const index = Number(position);
+  const material = run.bag[index];
+  run.talentState = { ...(run.talentState || {}), used: true };
+  if (verb === 'archive') {
+    run.talentState.protectedIndex = index;
+    return commitAction(run, `封存了${itemName(material)}，任何撤离结果都能保留。`, 'talent', before,
+      { title: '封存关键材料', text: `已封存${itemName(material)}；这次机会已用完，丢弃或消耗材料会失去保护。` });
+  }
+  removeBagItem(run, index);
+  const itemsAdded = placeLoot(run, ['compute']);
+  return commitAction(run, `消耗${itemName(material)}，改装出一张算力卡。`, 'talent', before,
+    { title: '临时算力改装', text: `用${itemName(material)}改装出一张算力卡。本次改装机会已用完。`, itemsAdded });
+}
+
 function skill(run, id) {
   return Math.max(1, Math.min(10, Math.floor(Number(run.skills?.[id]) || 1)));
 }
@@ -456,8 +534,35 @@ function venueFor(run) {
   return VENUES[run.venueId] || VENUES.conference;
 }
 
+function usesBalancedRules(run) {
+  return Number(run?.probabilityVersion) === RAID_BALANCE_VERSION;
+}
+
 function difficultyFor(run) {
-  return DIFFICULTIES[run?.difficultyId] || DIFFICULTIES.normal;
+  const definitions = usesBalancedRules(run) ? RAID_DIFFICULTIES : DIFFICULTIES;
+  return definitions[run?.difficultyId] || definitions.normal;
+}
+
+// Build a read-only snapshot for the pure v4 formulas. No new random draws or
+// migrations are needed, so a saved v3 event keeps its exact old resolution.
+function balanceInput(run, approachId = 'steady') {
+  const venue = venueFor(run);
+  const context = contextModifiers(run, approachId);
+  const bonuses = loadBonuses(run);
+  return {
+    difficulty: run.difficultyId, stage: run.stage,
+    research: skill(run, 'research'), engineering: skill(run, 'engineering'), expression: skill(run, 'expression'),
+    risk: run.stats?.risk, will: run.stats?.will, willMax: run.stats?.willMax,
+    load: bagWeight(run), capacity: capacityFor(run), depth: context.state.depth,
+    searches: (run.history || []).filter(id => id === 'container:search:probability').length,
+    venueDifficulty: venue.difficulty, venueMinStage: venue.minStage, venueBaseRisk: venue.baseRisk, venueGrowth: venue.growth,
+    contextAcquisition: context.acquisition, contextRisk: context.risk, contextCheck: context.check,
+    // Legacy context bundles depth into these numbers; v4 accounts for it once.
+    contextFail: context.fail - context.state.depth * 1.25,
+    contextPartial: context.partial - context.state.depth * 2,
+    contextExtraDrop: context.extra, baseExtraDrop: venue.extraDrop * 100,
+    support: run.support, storageBonus: bonuses.storage, searchGear: bonuses.search,
+  };
 }
 
 function capacityFor(run) {
@@ -501,11 +606,20 @@ function loadBonuses(run) {
     for (const [target, value] of Object.entries(mapped?.collection || {})) collection[target] = (collection[target] || 0) + value;
     for (const [action, value] of Object.entries(mapped?.event || {})) event[action] = (event[action] || 0) + value;
   }
+  const balanced = usesBalancedRules(run);
+  // Collection gear improves both useful yield and its specialty's share.
+  // Slot normalization prevents stacking device tiers; the sum still has a cap.
+  const search = [...set].reduce((sum, id) => sum + ({
+    lightweight_laptop: 1, gpu_workstation: 2, remote_terminal: 3,
+    citation_scanner: 1.5, literature_assistant: 1, experiment_tracker: 1, data_cleaner: 2,
+  }[id] || 0), 0);
+  if (balanced) for (const id of Object.keys(collection)) collection[id] *= 2;
   return {
     collection,
     event,
-    communication: set.has('foam_earplugs') || set.has('noise_headphones') ? 5 : 0,
-    storage: set.has('encrypted_ssd') ? 4 : 0,
+    search: balanced ? Math.min(4, search) : 0,
+    communication: set.has('noise_headphones') ? 5 : set.has('foam_earplugs') ? (balanced ? 3 : 5) : 0,
+    storage: set.has('encrypted_ssd') ? (balanced ? 3 : 4) : 0,
     backup: set.has('backup_device'),
   };
 }
@@ -524,6 +638,7 @@ function materialWeightBonus(run, id) {
 }
 
 function extraDropChance(run, approachId = 'steady') {
+  if (usesBalancedRules(run)) return raidExtraDropChance(balanceInput(run, approachId));
   const base = Math.max(0, Number(venueFor(run).extraDrop) || 0) * 100;
   return round1(clamp(base + difficultyFor(run).extraDropModifier + contextModifiers(run, approachId).extra, 0, 100));
 }
@@ -555,6 +670,9 @@ function encounterStatus(run, riskAfter, approachId = 'steady') {
   if ((run.eventCount || 0) >= eventsLimit) return { chance: 0, reason: `本局事件已达 ${eventsLimit} 次上限。` };
   if (run.encounterCooldown) return { chance: 0, reason: '上次交涉后的下一次搜索免交涉。' };
   if (!eventPool(run).length) return { chance: 0, reason: '本局可触发的人物事件已用完。' };
+  if (academicStoryCallbackReady(run)) {
+    return { chance: 100, reason: '先前的选择有了回音。再探索一次，就会遇到这桩奇遇的后续。', guaranteed: true };
+  }
   const base = 10 + venueFor(run).baseRisk + 0.5 * riskAfter + contextModifiers(run, approachId).encounter;
   const pacing = run.encounterPacing || { dryStreak: 0, firstEventSeen: false };
   const dryStreak = Math.max(0, Number(pacing.dryStreak) || 0);
@@ -573,6 +691,7 @@ function encounterStatus(run, riskAfter, approachId = 'steady') {
 }
 
 function acquisitionChance(run, approachId = 'steady') {
+  if (usesBalancedRules(run)) return raidSearchProbability(balanceInput(run, approachId));
   const difficulty = difficultyFor(run);
   const researchBonus = 4 * (skill(run, 'research') - 1);
   const context = contextModifiers(run, approachId).acquisition;
@@ -588,12 +707,14 @@ function acquisitionChance(run, approachId = 'steady') {
 }
 
 function searchRiskAfter(run, approachId = 'steady') {
+  if (usesBalancedRules(run)) return raidRiskAfterSearch(balanceInput(run, approachId));
   const growth = Math.max(1, venueFor(run).growth + difficultyFor(run).riskModifier + contextModifiers(run, approachId).risk);
   const result = Number(run.stats?.risk) + growth;
   return round1(clamp(result, 0, 100));
 }
 
 function exitProbabilities(run) {
+  if (usesBalancedRules(run)) return raidExtractionProbabilities(balanceInput(run));
   const v = venueFor(run);
   const risk = clamp(run.stats?.risk, 0, 100);
   const skillEngineering = skillBonus(skill(run, 'engineering'), 2, 8);
@@ -661,8 +782,12 @@ function computeProbabilities(run, approachId = 'steady') {
     encounterReason: encounter.reason,
     parts: {
       acquisition: {
-        base: 65,
+        base: usesBalancedRules(run) ? acquisition.base : 65,
         researchBonus: acquisition.researchBonus,
+        ...(usesBalancedRules(run) ? { gearBonus: acquisition.gear, familiarity: acquisition.familiarity,
+          riskPenalty: acquisition.riskPenalty, depthPenalty: acquisition.depthPenalty,
+          durationPenalty: acquisition.durationPenalty, fatiguePenalty: acquisition.fatiguePenalty,
+          loadPenalty: acquisition.loadPenalty } : {}),
         contextModifier: acquisition.context,
         difficultyModifier: d.acquisitionModifier,
         venueDifficulty: v.difficulty,
@@ -721,7 +846,7 @@ function expeditionState(run) {
   return {
     conditionId: safeId(state.conditionId, Object.keys(FIELD_CONDITIONS), 'arrival'),
     searchesInCondition: Math.floor(clamp(state.searchesInCondition, 0, 1)),
-    depth: Math.floor(clamp(state.depth, 0, 4)),
+    depth: usesBalancedRules(run) ? round1(clamp(state.depth, 0, 4)) : Math.floor(clamp(state.depth, 0, 4)),
     lastApproach: safeId(state.lastApproach, Object.keys(APPROACHES), 'steady'),
     effect: effectId && remainingSearches > 0 ? { id: effectId, remainingSearches } : null,
   };
@@ -744,7 +869,8 @@ function outlookFor(probabilities, risk = probabilities.parts?.acquisition?.risk
     extraction: likelihoodLabel(probabilities.full), risk: riskLabel(risk) };
 }
 
-function eventMomentum(event, success) {
+function eventMomentum(event, success, choice = null) {
+  if (choice?.skipMomentum) return null;
   return ({ npc: ['scrutiny', 'contact'], resource: ['interference', 'lead'],
     technical: ['interference', 'repaired'], route: ['detour', 'clear'] })[event.type]?.[Number(success)] || null;
 }
@@ -752,7 +878,8 @@ function eventMomentum(event, success) {
 function advanceExpedition(run, approachId) {
   const state = expeditionState(run);
   state.lastApproach = approachId;
-  state.depth = clamp(state.depth + APPROACHES[approachId].depth, 0, 4);
+  const depthDelta = usesBalancedRules(run) ? ({ cautious: -0.5, steady: 0.5, deep: 1 })[approachId] : APPROACHES[approachId].depth;
+  state.depth = clamp(state.depth + depthDelta, 0, 4);
   if (state.effect && --state.effect.remainingSearches <= 0) state.effect = null;
   state.searchesInCondition += 1;
   if (state.searchesInCondition >= 2) {
@@ -816,12 +943,18 @@ export function createProbabilityRaid(options = {}) {
     direction: Object.hasOwn(DIRECTIONS, options.direction) ? options.direction : 'llm',
     venueId,
     difficultyId,
+    stage: Math.floor(clamp(options.stage, 0, 7)),
     loadout,
     bagCap,
     bag,
     pendingLoot: [],
     pendingAutoExtract: false,
     protectedIndex: null,
+    stories: normalizeStories(options.stories),
+    storyEnabled: Object.hasOwn(options, 'stories'),
+    storyRun: null,
+    talent: normalizeRaidTalent(options.talent),
+    talentState: { used: false, protectedIndex: null },
     contacts: options.contacts && typeof options.contacts === 'object' ? clone(options.contacts) : {},
     contactUpdates: {},
     stats: { will: willMax, willMax, network: Math.max(0, Math.floor(Number(options.network) || 0)), risk: 0 },
@@ -835,12 +968,13 @@ export function createProbabilityRaid(options = {}) {
     history: [],
     log: [],
     result: null,
-    probabilityVersion: 3,
+    probabilityVersion: RAID_BALANCE_VERSION,
+    ...(options.surprise === true ? { encounterVersion: 2, resolvedEventIds: [] } : {}),
     encounterPacing: { eligibleSearches: 0, dryStreak: 0, firstEventSeen: false },
     lastAction: null,
     expedition: { conditionId: 'arrival', searchesInCondition: 0, depth: 0, lastApproach: 'steady', effect: null },
   };
-  const startText = `开始${VENUES[venueId].name}远征，${DIFFICULTIES[difficultyId].name}难度；材料按地点自然分布。`;
+  const startText = `开始${VENUES[venueId].name}远征，${difficultyFor(run).name}难度；材料按地点自然分布。`;
   log(run, 'system', `${startText}出行费已在出发时扣除。`);
   return run;
 }
@@ -850,7 +984,7 @@ export function probabilitySetup(profile = null) {
   const loadout = normalizeLoadout(Object.values(profile?.loadout || {}));
   const research = profile?.research || {};
   const skills = skillLevels({ ...research, skills: research.skills || {} });
-  const difficultyRows = Object.entries(DIFFICULTIES).map(([id, difficulty]) => ({
+  const difficultyRows = Object.entries(RAID_DIFFICULTIES).map(([id, difficulty]) => ({
     id,
     name: difficulty.name,
     description: difficulty.description,
@@ -862,7 +996,7 @@ export function probabilitySetup(profile = null) {
   const venues = Object.entries(VENUES).map(([id, venue]) => {
     const difficultyPreviews = difficultyRows.map(difficulty => {
       const previewRun = createProbabilityRaid({ seed: 1, venue: id,
-        difficulty: difficulty.id, skills, loadout });
+        difficulty: difficulty.id, stage, skills, loadout });
       const probabilities = computeProbabilities(previewRun);
       return {
         difficultyId: difficulty.id,
@@ -911,12 +1045,17 @@ const EVENT_LEAVE_CHOICE = {
   cost: {}, check: null,
   onSuccess: { riskDelta: 4, text: '你放弃当前机会，带着现有收获撤离。' },
 };
+const SURPRISE_LEAVE_CHOICE = { key: 'leave', name: '撤离', label: '撤离', exit: true,
+  cost: {}, onSuccess: { text: '你结束交谈，转身撤离。' } };
+const eventLeaveChoice = run => run.event?.encounterVersion === 2 ? SURPRISE_LEAVE_CHOICE : EVENT_LEAVE_CHOICE;
 
 function countBagItem(run, id) {
   return (run.bag || []).reduce((count, itemId) => count + Number(itemId === id), 0);
 }
 
 function requirementsReason(run, choice) {
+  if (choice.requiresTalent && normalizeRaidTalent(run.talent)?.id !== choice.requiresTalent) return '需要对应的生涯专长。';
+  if (choice.talentUse && run.talentState?.used) return '本次远征已经使用过专长。';
   if (choice.requiresAny?.length && !choice.requiresAny.some(id => countBagItem(run, id) > 0)) {
     return `需要背包里有${choice.requiresAny.map(itemName).join('或')}。`;
   }
@@ -940,6 +1079,22 @@ function choiceEvidenceAvailable(run, choice) {
 
 function eventChoiceProbability(run, choice) {
   if (!choice.check) return 100;
+  if (usesBalancedRules(run)) {
+    const check = choice.check;
+    const bonuses = loadBonuses(run);
+    const neutral = run.event?.encounterVersion === 2;
+    const preparedMaterials = ({ npc: ['wind', 'coop'], resource: ['dataset', 'src_code'],
+      technical: ['src_code', 'compute'], route: ['wind'] })[run.event?.type] || [];
+    const preparation = neutral && (run.bag || []).some(id => preparedMaterials.includes(id)) ? 3 : 0;
+    return raidEventProbability({ ...balanceInput(run, expeditionState(run).lastApproach),
+      base: check.base, neutral, hasSkill: !!check.skill, skillLevel: check.skill ? skill(run, check.skill) : 1,
+      skillCap: check.cap, evidenceBonus: preparation + (check.evidenceBonus && choiceEvidenceAvailable(run, choice) ? check.evidenceBonus : 0),
+      gearBonus: check.gear ? (bonuses.event[check.gear] || 0) : 0,
+      communicationBonus: check.communication ? Math.min(check.communication, bonuses.communication) : 0,
+      trustBonus: check.trustPerPoint ? eventTrust(run, run.event) * check.trustPerPoint : 0,
+      eventDifficulty: eventDifficulty(run) + (Number(run.event?.difficulty) || 0) + (Number(check.difficulty) || 0),
+    });
+  }
   const check = choice.check;
   const skillLevel = check.skill ? skill(run, check.skill) : 1;
   const ability = check.skill ? skillBonus(skillLevel, check.perLevel || 0, check.cap || 0) : 0;
@@ -1014,6 +1169,7 @@ function effectSummary(run, event, choice, effect = {}, fallback = "") {
   }
   const trustDelta = Number(effect.trustDelta) || 0;
   if (event.type === "npc" && trustDelta) actuals.push("人物信任 " + (trustDelta > 0 ? "+" : "") + round1(trustDelta));
+  if (Number.isInteger(effect.routeDepth) && effect.routeDepth < expeditionState(run).depth) actuals.push('回到靠近出口的位置');
   const story = effect.text || fallback || "行动已结算。";
   return actuals.length ? story + " 实际后果：" + actuals.join("；") + "。" : story;
 }
@@ -1028,10 +1184,15 @@ function choiceCostText(choice) {
 
 function eventAction(run, choice) {
   const reason = choice.exit && run.pendingLoot?.length ? '先整理本轮发现，再选择撤离。' : requirementsReason(run, choice);
+  if (run.event.encounterVersion === 2) return {
+    id: `event:${choice.key}`, name: choice.label || choice.name, label: choice.label || choice.name,
+    disabled: !!reason, reason, endsRaid: choice.exit === true,
+    ...(choice.talentUse ? { talent: true } : {}),
+  };
   const probability = eventChoiceProbability(run, choice);
   const event = run.event;
-  const successMomentum = !choice.exit && eventMomentum(event, true);
-  const failureMomentum = !choice.exit && eventMomentum(event, false);
+  const successMomentum = !choice.exit && eventMomentum(event, true, choice);
+  const failureMomentum = !choice.exit && eventMomentum(event, false, choice);
   const success = effectSummary(run, event, choice, choiceEffect(choice, 'success'), '行动成功。')
     + (successMomentum ? ` 后续两次搜索：${MOMENTUM[successMomentum].name}。${MOMENTUM[successMomentum].description}` : '');
   const failure = choice.check
@@ -1065,7 +1226,9 @@ function eventAction(run, choice) {
 function eventActionSpecs(run) {
   const event = run.event;
   if (!event) return [];
-  const choices = [...event.choices, EVENT_LEAVE_CHOICE];
+  const choices = [...event.choices];
+  if (event.encounterVersion !== 2 && !event.story && event.type === 'npc' && normalizeRaidTalent(run.talent)?.id === 'connector') choices.push(CONNECTOR_CHOICE);
+  choices.push(eventLeaveChoice(run));
   return choices.map(choice => eventAction(run, choice));
 }
 
@@ -1080,6 +1243,7 @@ function removeItemCount(run, id, amount) {
 }
 
 function applyEventCost(run, choice) {
+  if (choice.talentUse) run.talentState = { ...(run.talentState || {}), used: true };
   const cost = choice.cost || {};
   run.stats.will = round1(Math.max(0, run.stats.will - (Number(cost.will) || 0)));
   run.stats.network = Math.max(0, run.stats.network - (Number(cost.network) || 0));
@@ -1107,6 +1271,10 @@ function applyEventEffect(run, event, effect = {}, outcome = 'success') {
   const before = { risk: Number(run.stats.risk) || 0, will: Number(run.stats.will) || 0 };
   run.stats.risk = round1(clamp(before.risk + (Number(effect.riskDelta) || 0), 0, 100));
   run.stats.will = round1(clamp(before.will + (Number(effect.willDelta) || 0), 0, run.stats.willMax));
+  if (Number.isInteger(effect.routeDepth)) {
+    run.expedition = expeditionState(run);
+    run.expedition.depth = Math.floor(clamp(effect.routeDepth, 0, 4));
+  }
   if (effect.support != null) run.support = Math.max(Number(run.support) || 0, Number(effect.support) >= 8 ? 8 : 0);
   if (Number(effect.networkDelta)) run.stats.network = Math.max(0, Number(run.stats.network) + Number(effect.networkDelta));
   const added = [];
@@ -1126,39 +1294,52 @@ function applyEventEffect(run, event, effect = {}, outcome = 'success') {
 function resolveEvent(run, id) {
   const event = run.event;
   const actionId = id.slice('event:'.length);
-  const choice = actionId === 'leave' ? EVENT_LEAVE_CHOICE : event.choices.find(row => row.key === actionId);
+  if (event.encounterVersion === 2 && (run.resolvedEventIds || []).includes(event.id)) return responseFailure('这个事件已经结算。');
+  if (!storyResolutionAllowed(run, event)) return responseFailure('这段奇遇已经结算，不能重复领取结果。');
+  const choice = actionId === 'leave' ? eventLeaveChoice(run)
+    : actionId === CONNECTOR_CHOICE.key && event.encounterVersion !== 2 && !event.story && event.type === 'npc' && normalizeRaidTalent(run.talent)?.id === 'connector'
+      ? CONNECTOR_CHOICE : event.choices.find(row => row.key === actionId);
   if (!choice) return responseFailure('当前事件没有这个处理方案。');
   const publicAction = eventAction(run, choice);
   if (publicAction.disabled) return responseFailure(publicAction.reason || '当前条件不足。');
+  const probability = eventChoiceProbability(run, choice);
+  if (event.encounterVersion === 2) {
+    run.resolvedEventIds ||= [];
+    run.resolvedEventIds.push(event.id);
+  }
   const consumed = applyEventCost(run, choice);
   if (choice.exit) {
     const effect = choiceEffect(choice, 'success');
-  const result = applyEventEffect(run, event, effect, 'leave');
+    const result = applyEventEffect(run, event, effect, 'leave');
     run.event = null;
     run.encounterCooldown = true;
     run.pendingAutoExtract = true;
-    log(run, 'event', `${effect.text || publicAction.success} 风险增加到 ${run.stats.risk}。${consumed.length ? `消耗了${consumed.map(itemName).join('、')}。` : ''}`);
+    log(run, 'event', `${effect.text || publicAction.success}${event.encounterVersion === 2 ? '' : ` 风险增加到 ${run.stats.risk}。`}${consumed.length ? `消耗了${consumed.map(itemName).join('、')}。` : ''}`);
     if (!run.pendingLoot.length) finishExtraction(run, true);
-    return { ok: true, eventSuccess: null, itemsAdded: result.added, endsRaid: true, text: publicAction.success };
+    return { ok: true, eventSuccess: null, itemsAdded: result.added, endsRaid: true,
+      text: event.encounterVersion === 2 ? run.result?.summary || effect.text : publicAction.success };
   }
 
-  const probability = publicAction.probability;
   const success = choice.check ? rollPercent(run, probability) : true;
   const effect = choiceEffect(choice, success ? 'success' : 'failure');
+  const description = event.encounterVersion === 2 ? effectSummary(run, event, { ...choice, cost: {} }, effect)
+    : success ? publicAction.success : publicAction.failure;
   const result = applyEventEffect(run, event, effect, success ? 'success' : 'setback');
   if (event.type === 'npc' && choice.xp !== false) run.history.push(`npc:reply:${event.id}`);
   run.event = null;
   run.encounterCooldown = true;
-  const momentumId = eventMomentum(event, success);
+  recordAcademicStory(run, event, choice, success);
+  const momentumId = eventMomentum(event, success, choice);
   run.expedition = expeditionState(run);
   if (momentumId) run.expedition.effect = { id: momentumId, remainingSearches: 2 };
-  const description = success ? publicAction.success : publicAction.failure;
   log(run, 'event', `${description}${consumed.length ? ` 消耗了${consumed.map(itemName).join('、')}。` : ''}`);
+  if (event.encounterVersion === 2 && run.stats.will > 0) run.pendingAutoExtract = false;
   if (run.stats.will <= 0) {
     run.pendingAutoExtract = true;
     if (!run.pendingLoot.length) finishExtraction(run, true);
   }
-  return { ok: true, eventSuccess: success, itemsAdded: result.added, endsRaid: false, text: description };
+  return { ok: true, eventSuccess: success, itemsAdded: result.added, endsRaid: false, text: description,
+    ...(event.encounterVersion === 2 ? { brief: effect.brief || effect.text?.split(/[，。]/)[0] } : {}) };
 }
 
 function eventView(run) {
@@ -1169,7 +1350,10 @@ function eventView(run) {
     name: event.name,
     title: event.title,
     text: event.text,
+    ...(event.encounterVersion === 2 ? { encounterVersion: 2, prompt: event.prompt } : {}),
     kind: event.type,
+    ...(event.story ? { story: clone(event.story) } : {}),
+    ...(event.storyEcho ? { storyEcho: event.storyEcho } : {}),
     typeLabel: EVENT_TYPE_LABELS[event.type] || '人物事件',
     tone: event.tone || 'social',
     image: event.image || '/assets/generated/scholar.png',
@@ -1192,6 +1376,7 @@ function eventPacingView(run, probabilities) {
       ? Math.max(1, 4 - Math.max(0, Number(pacing.dryStreak) || 0))
       : Math.max(1, 2 - Math.max(0, Number(pacing.dryStreak) || 0));
   }
+  if (searchesUntilGuaranteed !== null && academicStoryCallbackReady(run)) searchesUntilGuaranteed = 1;
   return {
     searchesUntilGuaranteed,
     eventsUsed,
@@ -1274,6 +1459,7 @@ function actionView(run) {
       if (RESEARCH_MATERIALS.has(id)) addAction(actions, `backup:${index}`, `保护：${itemName(id)}`, false, '', 'backup');
     });
   }
+  actions.push(...talentActions(run));
   return actions;
 }
 
@@ -1296,14 +1482,15 @@ export function probabilityRaidView(run) {
   }
   return {
     mode: PROBABILITY_MODE,
-    probabilityVersion: 3,
+    probabilityVersion: usesBalancedRules(run) ? RAID_BALANCE_VERSION : 3,
+    ...(run.encounterVersion === 2 ? { encounterVersion: 2 } : {}),
     raidId: run.raidId,
     revision: Math.max(0, Number(run.revision) || 0),
     status: run.status,
     player: clone(run.player || {}),
     venue: { id: run.venueId, name: venueFor(run).name },
     difficulty: {
-      id: difficultyFor(run) === DIFFICULTIES[run.difficultyId] ? run.difficultyId : 'normal',
+      id: isProbabilityDifficulty(run.difficultyId) ? run.difficultyId : 'normal',
       name: difficultyFor(run).name,
       description: difficultyFor(run).description,
       acquisitionModifier: difficultyFor(run).acquisitionModifier,
@@ -1316,12 +1503,17 @@ export function probabilityRaidView(run) {
       network: Math.max(0, Math.floor(Number(run.stats?.network) || 0)),
       risk: round1(run.stats?.risk),
     },
-    bag: (run.bag || []).map((id, index) => publicItem(id, index, protectedIndex)),
+    bag: (run.bag || []).map((id, index) => ({ ...publicItem(id, index, protectedIndex),
+      protected: index === protectedIndex || index === talentProtectedIndex(run),
+      protection: index === protectedIndex && index === talentProtectedIndex(run) ? 'both'
+        : index === protectedIndex ? 'equipment' : index === talentProtectedIndex(run) ? 'talent' : null })),
     bagCap: Math.max(0, Number(run.bagCap) || PROBABILITY_BASE_BAG_CAP),
     bagUsed: round1(bagWeight(run)),
     probabilities,
     outlook: outlookFor(probabilities, run.stats?.risk),
     expedition: expeditionView(run),
+    stories: academicStoriesView(run),
+    talent: talentView(run),
     encounterPacing: eventPacingView(run, probabilities),
     lastAction: run.lastAction ? clone(run.lastAction) : null,
     event: eventView(run),
@@ -1356,6 +1548,8 @@ function commitAction(run, text, type = 'action', before = null, details = {}) {
   run.lastAction = {
     title: details.title || ({ search: '搜索结果', event: '事件处理', result: '撤离结算', loot: '物品整理', inventory: '背包整理', backup: '材料保护', supply: '补给使用' }[type] || '行动结果'),
     text: details.text || text || '行动已结算。',
+    ...(run.encounterVersion === 2 ? { brief: Array.from(details.brief || details.text?.split(/[。]/)[0]
+      || text?.split(/[。]/)[0] || '行动已结算').slice(0, 24).join('') } : {}),
     riskDelta: round1((Number(run.stats.risk) || 0) - (Number(stateBefore.risk) || 0)),
     willDelta: round1((Number(run.stats.will) || 0) - (Number(stateBefore.will) || 0)),
     networkDelta: round1((Number(run.stats.network) || 0) - (Number(stateBefore.network) || 0)),
@@ -1373,6 +1567,14 @@ function rollPercent(run, percent) {
 }
 
 function chooseEvent(run) {
+  const stories = academicStoryCandidates(run);
+  if (stories.length) {
+    const total = stories.reduce((sum, event) => sum + academicStoryWeight(run, event), 0);
+    let draw = nextRandom(run) * total;
+    const event = stories.find(candidate => { draw -= academicStoryWeight(run, candidate); return draw < 0; }) || stories.at(-1);
+    if (!run.storyRun) run.storyRun = { id: event.story.id, initialChapter: event.story.chapter - 1 };
+    return prepareSurpriseEncounter(run, event, () => nextRandom(run));
+  }
   const pool = eventPool(run);
   if (!pool.length) return null;
   const weights = contextModifiers(run).condition.events || {};
@@ -1384,11 +1586,12 @@ function chooseEvent(run) {
     ...event,
     name: typeof contact.name === 'string' && contact.name ? contact.name : event.name,
     trust: Number(contact.trust) || 0,
-    text: `${event.text} 当前交流方向：${DIRECTIONS[run.direction]?.name || '大模型'}。`,
+    text: event.text,
   };
   chosen.choices = clone(event.choices || []);
+  if (run.encounterVersion === 2 && event.type === 'npc' && normalizeRaidTalent(run.talent)?.id === 'connector') chosen.choices.push(CONNECTOR_CHOICE);
   chosen.typeLabel = EVENT_TYPE_LABELS[event.type] || '人物事件';
-  return chosen;
+  return prepareSurpriseEncounter(run, withAcademicStoryEcho(run, chosen), () => nextRandom(run));
 }
 
 function validProtectedItem(run) {
@@ -1404,23 +1607,23 @@ function finishExtraction(run, automatic = false) {
   const kind = draw < probabilities.fail ? 'scatter'
     : draw < probabilities.fail + probabilities.partial ? 'messy' : 'clean';
   const protectedItem = validProtectedItem(run);
-  const protectedIndex = protectedItem?.index ?? -1;
-  const protectedId = protectedItem?.id || null;
+  const archivedIndexes = new Set([protectedItem?.index, talentProtectedIndex(run)].filter(index => Number.isInteger(index) && index >= 0));
+  const protectedId = protectedItem?.id || run.bag?.[talentProtectedIndex(run)] || null;
   const bag = [...(run.bag || [])];
   let lostIndex = -1;
   if (kind === 'scatter') {
     // Failure loses all unprotected carried items, including unused supplies.
   } else if (kind === 'messy') {
     const candidates = bag.map((id, index) => ({ id, index }))
-      .filter(item => item.index !== protectedIndex && RESEARCH_MATERIALS.has(item.id))
+      .filter(item => !archivedIndexes.has(item.index) && RESEARCH_MATERIALS.has(item.id))
       .sort((a, b) => itemValue(a.id) - itemValue(b.id) || a.index - b.index);
     if (candidates.length) lostIndex = candidates[0].index;
   }
 
-  const archivedIds = protectedId ? [protectedId] : [];
-  const carriedIds = kind === 'scatter' ? [] : bag.filter((id, index) => index !== protectedIndex && index !== lostIndex);
+  const archivedIds = [...archivedIndexes].map(index => bag[index]);
+  const carriedIds = kind === 'scatter' ? [] : bag.filter((id, index) => !archivedIndexes.has(index) && index !== lostIndex);
   const lostIds = kind === 'scatter'
-    ? bag.filter((_, index) => index !== protectedIndex)
+    ? bag.filter((_, index) => !archivedIndexes.has(index))
     : lostIndex >= 0 ? [bag[lostIndex]] : [];
   const noMaterialLoss = kind === 'messy' && lostIndex < 0;
   run.result = {
@@ -1437,7 +1640,7 @@ function finishExtraction(run, automatic = false) {
     noMaterialLoss,
     summary: kind === 'clean' ? '完整带回：背包物品全部保留。'
       : kind === 'messy' ? noMaterialLoss ? '部分带回：没有未保护的研究材料需要损失。' : `部分带回：仅损失 1 份未保护材料${lostIds[0] ? `「${itemName(lostIds[0])}」` : ''}。`
-        : `行动失败：未保护物品损失${protectedId ? `；「${itemName(protectedId)}」已由备份设备保护` : ''}。`,
+        : `行动失败：未保护物品损失${archivedIds.length ? `；${archivedIds.map(id => `「${itemName(id)}」`).join('、')}已由备份或封存保护` : ''}。`,
   };
   run.status = 'ended';
   run.pendingLoot = [];
@@ -1456,6 +1659,8 @@ function removeBagItem(run, index) {
   const [id] = run.bag.splice(index, 1);
   if (run.protectedIndex === index) run.protectedIndex = null;
   else if (Number.isInteger(run.protectedIndex) && run.protectedIndex > index) run.protectedIndex -= 1;
+  if (run.talentState?.protectedIndex === index) run.talentState.protectedIndex = null;
+  else if (Number.isInteger(run.talentState?.protectedIndex) && run.talentState.protectedIndex > index) run.talentState.protectedIndex -= 1;
   return id;
 }
 
@@ -1532,6 +1737,8 @@ export function actProbabilityRaid(run, action) {
   if (!id) return responseFailure('无效的行动。');
   const before = { risk: Number(run.stats?.risk) || 0, will: Number(run.stats?.will) || 0, network: Number(run.stats?.network) || 0 };
 
+  if (id.startsWith('talent:')) return performTalentAction(run, id, before);
+
   if (id.startsWith('event:')) {
     if (!run.event || !Array.isArray(run.event.choices)) return responseFailure('当前没有可处理的规则事件。');
     const result = resolveEvent(run, id);
@@ -1540,6 +1747,7 @@ export function actProbabilityRaid(run, action) {
     const committed = commitAction(run, '', type, before, {
       title: result.endsRaid ? '事件离场' : '事件处理',
       text: result.text,
+      brief: result.brief,
       itemsAdded: result.itemsAdded || [],
       eventTriggered: null,
     });
@@ -1607,9 +1815,7 @@ export function actProbabilityRaid(run, action) {
     if (!/^\d+$/.test(rawIndex)) return responseFailure('物品位置无效。');
     const index = Number(rawIndex);
     if (index < 0 || index >= run.bag.length) return responseFailure('背包里没有这个位置的物品。');
-    const [removed] = run.bag.splice(index, 1);
-    if (run.protectedIndex === index) run.protectedIndex = null;
-    else if (Number.isInteger(run.protectedIndex) && run.protectedIndex > index) run.protectedIndex -= 1;
+    const removed = removeBagItem(run, index);
     log(run, 'loot', `你丢弃了${itemName(removed)}；风险不变。`);
     finishIfAutomatic(run);
     return { ...commitAction(run, '', run.status === 'ended' ? 'result' : 'inventory', before, {

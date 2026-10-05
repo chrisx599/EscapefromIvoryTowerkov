@@ -3,6 +3,7 @@ import { GEAR, SHOP_ITEMS } from './loot-content.js';
 import { EQUIPMENT_SLOTS, normalizeResearch, researchView, researchAct, learnFromRaid, VENUES, skillLevels } from './research.js';
 import { createProbabilityRaid, isProbabilityDifficulty, probabilitySetup, PROBABILITY_MODE } from './probability-raid.js';
 import { createIdentity } from './identity.js';
+import { normalizeStories, storyJournal } from './academic-stories.js';
 
 export { probabilitySetup };
 
@@ -104,9 +105,10 @@ function profileDefaults(seed) {
     settledRaidIds: [],
     migratedLegacyRunIds: [],
     migrationNotice: null,
-    research: normalizeResearch({}, seed),
+    research: normalizeResearch({ balanceVersion: 2 }, seed),
     venue: 'conference',
     contacts: {},
+    stories: normalizeStories(),
   };
 }
 
@@ -346,6 +348,7 @@ function normalizeVersion2(raw) {
     ...clone(source),
     identity,
     contacts: source.contacts && typeof source.contacts === 'object' && !Array.isArray(source.contacts) ? clone(source.contacts) : {},
+    stories: normalizeStories(source.stories),
     research: normalizeResearch(source.research, Number(run?.seed) || 1),
     venue: Object.hasOwn(VENUES, source.venue) ? source.venue : 'conference',
     funding: Math.max(0, Math.floor(Number(source.funding) || 0)),
@@ -539,6 +542,7 @@ export function careerView(career) {
     venue: profile.venue,
     venues: Object.entries(VENUES).map(([id, venue]) => ({ id, ...venue, disabled: profile.research.stage < venue.minStage })),
     contacts: clone(profile.contacts || {}),
+    stories: storyJournal(profile.stories),
     probabilitySetup: probabilitySetup(profile),
     storageUpgrade: storageUpgradeView(career),
     migrationNotice: profile.migrationNotice ? clone(profile.migrationNotice) : null,
@@ -629,6 +633,7 @@ export function deployProbability(career, options = {}) {
     raidId,
     venue: venueId,
     difficulty: difficultyId,
+    stage: profile.research.stage,
     player: clone(profile.identity),
     skills: skillLevels(profile.research),
     direction: profile.research.direction,
@@ -636,6 +641,11 @@ export function deployProbability(career, options = {}) {
     supplies,
     network: profile.network,
     contacts: profile.contacts,
+    stories: normalizeStories(profile.stories),
+    // Titles now provide automatic research support. Keep old active raid
+    // identities in their saved run, but never create a new faction ability.
+    talent: null,
+    surprise: true,
   });
   if (run.bag.length !== supplies.length) return { ok: false, reason: '补给放不进当前背包。' };
 
@@ -663,7 +673,7 @@ function cryptoId() {
 
 export function settle(career) {
   const run = career.run;
-  if (!run || run.mode !== PROBABILITY_MODE || Number(run.probabilityVersion) !== 3 || run.status !== 'ended' || run.settled) return false;
+  if (!run || run.mode !== PROBABILITY_MODE || ![3, 4].includes(Number(run.probabilityVersion)) || run.status !== 'ended' || run.settled) return false;
   const result = run.result || {};
   const raidId = String(run.raidId || `raid-${cryptoId()}`);
   if (career.profile.settledRaidIds.includes(raidId)) {
@@ -674,7 +684,7 @@ export function settle(career) {
   const cleanOrMessy = kind === 'clean' || kind === 'messy';
   const archivedIds = Array.isArray(result.archivedIds) ? result.archivedIds : [];
   const carriedIds = Array.isArray(result.carriedIds) ? result.carriedIds : [];
-  // The v3 run references permanently owned equipment; only actual recovered
+  // Current and v3 runs reference permanently owned equipment; only recovered
   // material IDs enter inventory here.
   addUniqueIds(career.profile, archivedIds);
   addUniqueIds(career.profile, carriedIds);
@@ -694,6 +704,9 @@ export function settle(career) {
     };
   }
   career.profile.raids += 1;
+  // Choices are career memories, not backpack loot. Preserve them even when
+  // extraction fails, but never replace existing memories from a legacy run.
+  if (run.stories) career.profile.stories = normalizeStories(run.stories);
   learnFromRaid(career.profile, run);
   if (cleanOrMessy) career.profile.extracted += 1;
   const networkReport = networkAfter - networkBefore;
@@ -751,6 +764,22 @@ export function hubAct(career, action) {
     profile.warehouseLevel = nextLevel;
     profile.stashCap = nextCap;
     return { ok: true, level: nextLevel, capacity: nextCap, spent: cost };
+  }
+  if (verb === 'sell-batch') {
+    let requested;
+    try { requested = JSON.parse(id); } catch { return { ok: false, reason: '选择无效。' }; }
+    if (!requested || Array.isArray(requested) || typeof requested !== 'object' || !Object.keys(requested).length) return { ok: false, reason: '请选择物品。' };
+    for (const [itemId, count] of Object.entries(requested)) {
+      if (!itemDef(itemId) || !Number.isSafeInteger(count) || count < 1 || count > storedCount(profile, itemId) - packedCount(profile, itemId)) return { ok: false, reason: '库存已变化，请重新选择。' };
+    }
+    let soldFor = 0, soldCount = 0;
+    for (const [itemId, count] of Object.entries(requested)) {
+      profile.stash[itemId] -= count;
+      if (profile.stash[itemId] <= 0) delete profile.stash[itemId];
+      soldFor += cashPrice(itemId) * count; soldCount += count;
+    }
+    profile.funding += soldFor;
+    return { ok: true, soldFor, soldCount };
   }
   const item = itemDef(id);
   const shop = shopMap().get(id);

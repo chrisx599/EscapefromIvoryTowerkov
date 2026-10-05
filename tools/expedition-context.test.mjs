@@ -7,7 +7,8 @@ import { likelihoodLabel, riskLabel, encounterLabel } from '../public/expedition
 const conditions = ['arrival', 'exchange', 'sidepath', 'lab', 'checkpoint', 'archive'];
 const effects = ['contact', 'scrutiny', 'lead', 'interference', 'repaired', 'clear', 'detour'];
 const actions = ['search:cautious', 'search', 'search:deep'];
-const make = (options = {}) => createProbabilityRaid({ seed: 234567, ...options });
+// Saved-v3 context regression fixtures keep their original numerical rules.
+const make = (options = {}) => { const run = createProbabilityRaid({ seed: 234567, ...options }); run.probabilityVersion = 3; delete run.stage; return run; };
 const view = probabilityRaidView;
 const round = value => Math.round(value * 10) / 10;
 function withoutEvents(options) {

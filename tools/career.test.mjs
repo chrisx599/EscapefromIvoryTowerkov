@@ -444,7 +444,7 @@ test('active raid persistence keeps equipped IDs associated with the loaded gear
   const restored = migrateCareer(JSON.parse(JSON.stringify(career)));
   assert.deepEqual(restored.profile.loadout, career.profile.loadout);
   assert.deepEqual(restored.run.loadout, career.run.loadout);
-  assert.equal(restored.run.probabilityVersion, 3);
+  assert.equal(restored.run.probabilityVersion, 4);
   assert.equal(restored.run.difficultyId, 'hard');
   const stashBeforeView = structuredClone(restored.profile.stash);
   const hub = careerView(restored);
@@ -587,7 +587,7 @@ test('retired saves recover actual asset counts once without replaying run rewar
   assert.throws(() => migrateCareer({ broken: true }), /unrecognized save format/);
 });
 
-test('current API creates a durable profile, deploys version 3, and protects an active run', { timeout: 15000 }, async () => {
+test('current API creates a durable profile, deploys version 4, and protects an active run', { timeout: 15000 }, async () => {
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
   const sid = randomBytes(12).toString('hex');
@@ -613,7 +613,7 @@ test('current API creates a durable profile, deploys version 3, and protects an 
     const deployed = await api(base, sid, '/api/new', 'POST', { venue: 'conference', difficulty: 'normal', requestId: 'career-current-deploy-01' });
     assert.equal(deployed.ok, true);
     assert.equal(deployed.phase, 'raid');
-    assert.equal(deployed.view.probabilityVersion, 3);
+    assert.equal(deployed.view.probabilityVersion, 4);
     assert.equal(deployed.view.difficulty.id, 'normal');
     assert.equal(deployed.view.clock, undefined);
     assert.equal(deployed.hub.loadout.focus, 'noise_headphones', 'the raid borrows the current profile equipment');
@@ -623,7 +623,7 @@ test('current API creates a durable profile, deploys version 3, and protects an 
     child = await startServer(port, saveDir);
     const restored = await api(base, sid, '/api/state');
     assert.equal(restored.phase, 'raid');
-    assert.equal(restored.view.probabilityVersion, 3);
+    assert.equal(restored.view.probabilityVersion, 4);
     assert.equal(restored.view.difficulty.id, 'normal');
     assert.equal(restored.view.revision, deployed.view.revision);
     assert.equal(restored.hub.loadout.focus, 'noise_headphones');
@@ -639,7 +639,7 @@ test('current API creates a durable profile, deploys version 3, and protects an 
 
     const saved = JSON.parse(await readFile(savePath, 'utf8'));
     assert.equal(saved.version, 2);
-    assert.equal(saved.run.probabilityVersion, 3);
+    assert.equal(saved.run.probabilityVersion, 4);
   } finally {
     await stopServer(child);
     await removeIsolatedSaveDir(saveDir);
@@ -662,10 +662,10 @@ test('concurrent first deployments create only one current run', { timeout: 1500
     const state = await api(base, sid, '/api/state');
     assert.equal(state.phase, 'raid');
     assert.equal(state.hub.funding, 800, 'the free conference deployment should not charge a client-supplied allowance');
-    assert.equal(state.view.probabilityVersion, 3);
+    assert.equal(state.view.probabilityVersion, 4);
     assert.ok(['normal', 'hard'].includes(state.view.difficulty.id));
     const saved = JSON.parse(await readFile(path.join(saveDir, `${sid}.json`), 'utf8'));
-    assert.equal(saved.run.probabilityVersion, 3);
+    assert.equal(saved.run.probabilityVersion, 4);
   } finally {
     await stopServer(child);
     await removeIsolatedSaveDir(saveDir);

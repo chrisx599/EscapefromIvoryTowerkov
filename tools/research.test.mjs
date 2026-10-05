@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCareer, careerView, hubAct, migrateCareer, deployProbability } from '../src/career.js';
 import { STAGES } from '../src/research.js';
+import { finishPaper, nextResearchAction } from './research-qa.mjs';
 
 const action = (career, verb) => hubAct(career, `research:${verb}`);
 function supplied(seed = 123456789) {
@@ -11,14 +12,8 @@ function supplied(seed = 123456789) {
   return career;
 }
 function accepted(career, type = 'evaluate') {
-  assert.equal(action(career, `start:${type}`).ok, true);
-  while (career.profile.research.project.runs < 2 || career.profile.research.project.quality < careerView(career).research.project.target) {
-    assert.equal(action(career, 'experiment').ok, true);
-  }
-  assert.equal(action(career, 'submit').ok, true);
-  assert.equal(action(career, 'review').ok, true);
-  assert.equal(career.profile.research.project.status, 'ready');
-  assert.equal(action(career, 'publish').ok, true);
+  return finishPaper(career.profile, { start: type, act: verb => action(career, verb),
+    onExperiment: project => { career.profile.stash.compute = Math.max(career.profile.stash.compute || 0, 1 + project.scope); } });
 }
 
 test('project prerequisites and payments are atomic, including missing equipment', () => {
@@ -55,11 +50,19 @@ test('experiments consume compute, reload deterministically, and reward publicat
   const restored = migrateCareer(JSON.stringify(career));
   action(career, 'experiment'); action(restored, 'experiment');
   assert.deepEqual(restored.profile.research, career.profile.research);
-  while (career.profile.research.project.quality < 65) assert.equal(action(career, 'experiment').ok, true);
+  while (career.profile.research.project.quality < 100 || career.profile.research.project.evidence < 100) {
+    career.profile.stash.compute = 1;
+    assert.equal(action(career, 'experiment').ok, true);
+    assert.ok(career.profile.research.project.runs < 30, 'full evidence must remain reachable');
+  }
   action(career, 'submit');
   assert.equal(career.profile.achievement, 0);
   action(career, 'review');
   assert.equal(career.profile.achievement, 0);
+  while (career.profile.research.project.status !== 'ready') {
+    const next = nextResearchAction(career.profile.research);
+    assert.equal(action(career, next).ok, true);
+  }
   const funds = career.profile.funding;
   assert.equal(action(career, 'publish').ok, true);
   assert.equal(career.profile.achievement, 30);
@@ -72,7 +75,8 @@ test('experiments consume compute, reload deterministically, and reward publicat
 
 test('rejections require new experiments before resubmission and cannot farm expression', () => {
   const career = supplied();
-  action(career, 'start:evaluate'); action(career, 'experiment'); action(career, 'experiment');
+  action(career, 'start:evaluate');
+  while (nextResearchAction(career.profile.research) === 'experiment') action(career, 'experiment');
   career.profile.research.project.quality = 25;
   action(career, 'submit'); action(career, 'review');
   assert.equal(career.profile.research.project.status, 'rejected');
@@ -92,10 +96,10 @@ test('research equipment improves experiments and finetuning requires rank and a
   action(plain, 'start:replicate'); action(geared, 'start:replicate');
   assert.equal(geared.profile.research.project.quality - plain.profile.research.project.quality, 8);
   action(plain, 'experiment'); action(geared, 'experiment');
-  assert.equal(geared.profile.research.project.quality - plain.profile.research.project.quality, 13);
+  assert.ok(geared.profile.research.project.quality > plain.profile.research.project.quality, 'equipped experiment tool makes a real quality difference');
   assert.equal(action(geared, 'direction:robotics').ok, false);
   action(geared, 'abandon');
-  assert.equal(action(geared, 'direction:robotics').ok, true);
+  assert.equal(action(geared, 'direction:robotics').ok, false, 'removed direction actions stay retired without a project');
   assert.equal(action(geared, 'start:finetune').ok, false);
   assert.equal(hubAct(geared, 'buy:gpu_workstation').ok, false);
   geared.profile.research.stage = 1;
@@ -105,14 +109,20 @@ test('research equipment improves experiments and finetuning requires rank and a
   assert.equal(action(geared, 'start:finetune').ok, true);
 });
 
-test('material preparation replaces one held material and cannot duplicate it', () => {
+test('raw research material is consumed atomically at project start, with no standalone preparation action', () => {
   const career = createCareer(9);
-  career.profile.stash.unpublished = 1;
-  assert.equal(action(career, 'prepare:unpublished').ok, true);
-  assert.equal(career.profile.stash.unpublished, undefined);
-  assert.equal(career.profile.stash.dataset, 1);
+  Object.assign(career.profile.stash, { unpublished: 1, src_code: 1 });
+  const before = JSON.stringify(career);
   assert.equal(action(career, 'prepare:unpublished').ok, false);
-  assert.equal(career.profile.stash.dataset, 1);
+  assert.equal(JSON.stringify(career), before);
+  assert.equal(action(career, 'start:replicate').ok, true);
+  assert.equal(career.profile.stash.unpublished, undefined);
+  assert.equal(career.profile.stash.dataset, undefined, 'automatic input consumption must not manufacture stock');
+  assert.equal(career.profile.stash.src_code, undefined);
+  assert.equal(career.profile.research.project.preparation, 1);
+  const started = JSON.stringify(career);
+  assert.equal(action(career, 'start:replicate').ok, false);
+  assert.equal(JSON.stringify(career), started, 'a repeated start must not consume or reward twice');
 });
 
 test('unknown research and venue identifiers fail without changing the profile', () => {
@@ -140,16 +150,15 @@ test('saved achievement credits survive profile migration without manufacturing 
 
 test('paper milestones can unlock all career stages and additional raid scenes', () => {
   const career = supplied(987654321);
-  action(career, 'direction:multimodal');
   assert.equal(hubAct(career, 'venue:visit').ok, false);
-  for (let paper = 0; paper < 30 && career.profile.research.stage < STAGES.length - 1; paper++) {
-    Object.assign(career.profile.stash, { dataset: 3, wind: 3, compute: 12 });
+  for (let paper = 0; paper < 55 && career.profile.research.stage < STAGES.length - 1; paper++) {
+    Object.assign(career.profile.stash, { dataset: 3, src_code: 3, wind: 3, compute: 24 });
     if (career.profile.research.stage >= 3) {
       career.profile.stash.remote_terminal = 1; hubAct(career, 'equip:remote_terminal');
     } else if (career.profile.research.stage >= 1) {
       career.profile.stash.gpu_workstation = 1; hubAct(career, 'equip:gpu_workstation');
     }
-    accepted(career);
+    accepted(career, paper % 2 ? 'replicate' : 'evaluate');
     while (action(career, 'promote').ok) { /* earned milestones */ }
   }
   assert.equal(career.profile.research.stage, STAGES.length - 1);
@@ -158,4 +167,49 @@ test('paper milestones can unlock all career stages and additional raid scenes',
   assert.equal(deployProbability(career, { seed: 400, venue: 'industry', difficulty: 'normal' }).ok, true);
   assert.equal(career.run.venueId, 'industry');
   assert.equal(action(career, 'start:replicate').ok, false);
+});
+
+
+test('an old six-run rejected project can recover without surrendering its prior work', () => {
+  const old = supplied(61728);
+  action(old, 'start:replicate');
+  Object.assign(old.profile.research.project, { quality: 15, runs: 6, submittedRuns: 6, reviews: 2, status: 'rejected' });
+  for (const key of ['balanceVersion', 'evidence', 'successfulRuns', 'setbacks', 'lastOutcome', 'preparation']) delete old.profile.research.project[key];
+  const career = migrateCareer(JSON.stringify(old));
+  const before = structuredClone(career.profile.research.project);
+  assert.equal(before.runs, 6);
+  assert.equal(before.status, 'rejected');
+  assert.equal(career.profile.funding, old.profile.funding);
+  assert.equal(action(career, 'submit').ok, false);
+  const progress = finishPaper(career.profile, {
+    act: verb => action(career, verb),
+    onExperiment: project => { career.profile.stash.compute = Math.max(career.profile.stash.compute || 0, 1 + project.scope); },
+  });
+  assert.ok(progress.runs > 0 && progress.runs <= 17, 'old progress has a finite paid recovery even beyond six runs');
+  assert.equal(career.profile.research.papers[0].id, before.id, 'the existing project is repaired, not silently abandoned or replaced');
+  assert.equal(career.profile.achievement, 30);
+  assert.equal(career.profile.research.project, null);
+});
+
+test('research flavor has broad outcome-specific variety without mutating saved state or RNG', async () => {
+  const { researchNarrative } = await import('../src/research-narratives.js');
+  const expected = { success: 8, setback: 8, support: 6, accepted: 6,
+    supportedReview: 4, revision: 6, rejected: 6, published: 8 };
+  for (const [kind, count] of Object.entries(expected)) {
+    const lines = new Set();
+    for (let i = 0; i < 400; i++) {
+      const research = { rngState: i * 7919 };
+      const project = { id: `paper-${i}`, type: 'replicate', runs: i % 8, reviews: i % 3 };
+      const snapshot = JSON.stringify({ research, project });
+      const text = researchNarrative(kind, research, project);
+      lines.add(text);
+      assert.equal(researchNarrative(kind, research, project), text);
+      assert.equal(JSON.stringify({ research, project }), snapshot);
+      if (kind === 'revision') assert.match(text, /需要返修/);
+      if (kind === 'rejected') assert.match(text, /暂未录用/);
+      if (kind === 'accepted') assert.match(text, /审稿通过/);
+      if (kind === 'published') assert.match(text, /正式发表/);
+    }
+    assert.equal(lines.size, count, kind);
+  }
 });

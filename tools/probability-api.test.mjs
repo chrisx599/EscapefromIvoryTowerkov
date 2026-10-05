@@ -221,13 +221,13 @@ function assertWarehouseLedger(hub) {
   assert.equal(storedRows.reduce((sum, item) => sum + item.count, 0), hub.stashUsed);
 }
 
-function assertRaid(payload) {
+function assertRaid(payload, version = 4) {
   assert.equal(payload.phase, 'raid');
   assert.ok(payload.view && typeof payload.view === 'object');
   assert.equal(typeof payload.view.raidId, 'string');
   assert.ok(Number.isInteger(payload.view.revision));
   assert.equal(payload.view.clock, undefined, 'probability-mode runs must not acquire a real-time raid clock');
-  assert.equal(payload.view.probabilityVersion, 3, 'new probability runs should use the difficulty-based material pool');
+  assert.equal(payload.view.probabilityVersion, version, 'fresh runs use v4 and explicitly saved v3 runs preserve their rules');
   assert.ok(payload.view.difficulty && ['easy', 'normal', 'hard'].includes(payload.view.difficulty.id));
   for (const field of ['acquisitionModifier', 'riskModifier', 'eventModifier', 'extraDropModifier']) {
     assert.ok(Number.isFinite(payload.view.difficulty[field]), `difficulty.${field} should be numeric`);
@@ -420,18 +420,18 @@ test('probability API validates deployments and commits replay-safe rule actions
       }
 
       const { easy, normal, hard } = deployments;
-      assert.equal(easy.payload.view.difficulty.acquisitionModifier, -5);
+      assert.equal(easy.payload.view.difficulty.acquisitionModifier, 6);
       assert.equal(easy.payload.view.difficulty.riskModifier, -3);
-      assert.equal(easy.payload.view.difficulty.eventModifier, 10);
+      assert.equal(easy.payload.view.difficulty.eventModifier, 7);
       assert.equal(easy.payload.view.difficulty.extraDropModifier, 0);
       assert.equal(normal.payload.view.difficulty.acquisitionModifier, 0);
       assert.equal(normal.payload.view.difficulty.extraDropModifier, 0);
-      assert.equal(hard.payload.view.difficulty.acquisitionModifier, 8);
+      assert.equal(hard.payload.view.difficulty.acquisitionModifier, -8);
       assert.equal(hard.payload.view.difficulty.riskModifier, 4);
-      assert.equal(hard.payload.view.difficulty.eventModifier, -10);
-      assert.equal(hard.payload.view.difficulty.extraDropModifier, 15);
-      assert.equal(easy.payload.view.probabilities.acquisition, normal.payload.view.probabilities.acquisition - 5);
-      assert.equal(hard.payload.view.probabilities.acquisition, normal.payload.view.probabilities.acquisition + 8);
+      assert.equal(hard.payload.view.difficulty.eventModifier, -9);
+      assert.equal(hard.payload.view.difficulty.extraDropModifier, 18);
+      assert.equal(easy.payload.view.probabilities.acquisition, normal.payload.view.probabilities.acquisition + 6);
+      assert.equal(hard.payload.view.probabilities.acquisition, normal.payload.view.probabilities.acquisition - 8);
       assert.equal(easy.search.searchPreview.riskDelta, normal.search.searchPreview.riskDelta - 3);
       assert.equal(hard.search.searchPreview.riskDelta, normal.search.searchPreview.riskDelta + 4);
 
@@ -452,7 +452,7 @@ test('probability API validates deployments and commits replay-safe rule actions
         };
         await seedCareer(saveDir, sid, career);
         const eventState = (await call(game.base, sid, '/api/state')).payload;
-        assertRaid(eventState);
+        assertRaid(eventState, 3);
         assert.equal(eventState.view.difficulty.id, difficulty);
         assert.equal(eventState.view.event.actions.find(action => action.id === 'event:explain')?.probability,
           expectedEventCheck[difficulty], 'event difficulty should modify a real response check, not event spawn odds');
@@ -738,16 +738,27 @@ test('probability API validates deployments and commits replay-safe rule actions
       assert.ok(current.view.event.actions.some(action => action.id.startsWith('event:') && action.endsRaid === false),
         'current events should expose generic event:* continuation actions');
       const exit = current.view.event.actions.find(action => action.endsRaid === true);
-      assert.ok(exit?.exitProbabilities && exit.id.startsWith('event:'), 'only explicitly terminal choices should carry their own exit distribution');
+      assert.ok(exit?.id.startsWith('event:'), 'an explicitly terminal action remains available');
       for (const action of current.view.event.actions) {
-        assert.equal(typeof action.cost, 'string');
-        assert.equal(typeof action.success, 'string');
-        assert.equal(typeof action.failure, 'string');
-        if (action.endsRaid) {
-          assert.equal(action.probability, undefined, 'terminal choices expose exit odds instead of a response-check rate');
-          assert.ok(action.exitProbabilities);
+        if (current.view.event.encounterVersion === 2) {
+          assert.equal(typeof current.view.event.prompt, 'string');
+          assert.ok(current.view.event.prompt.length <= 30);
+          assert.equal(typeof action.label, 'string');
+          assert.ok(action.label.length <= 12);
+          for (const key of ['cost', 'success', 'failure', 'probability', 'outlook', 'exitProbabilities']) {
+            assert.equal(action[key], undefined, `neutral encounters do not forecast ${key}`);
+          }
+          if (action.endsRaid) assert.equal(action.label, '撤离');
         } else {
-          assert.ok(Number.isFinite(action.probability) && action.probability >= 0 && action.probability <= 100);
+          assert.equal(typeof action.cost, 'string');
+          assert.equal(typeof action.success, 'string');
+          assert.equal(typeof action.failure, 'string');
+          if (action.endsRaid) {
+            assert.equal(action.probability, undefined, 'legacy terminal choices expose exit odds instead of a response-check rate');
+            assert.ok(action.exitProbabilities);
+          } else {
+            assert.ok(Number.isFinite(action.probability) && action.probability >= 0 && action.probability <= 100);
+          }
         }
       }
 
@@ -793,7 +804,7 @@ test('probability API validates deployments and commits replay-safe rule actions
       dryRun.encounterCooldown = false;
       await seedCareer(saveDir, drySid, dryCareer);
       const fullBefore = (await call(game.base, drySid, '/api/state')).payload;
-      assertRaid(fullBefore);
+      assertRaid(fullBefore, 3);
       assert.equal(fullBefore.view.encounterPacing.noEventStreak, 3);
       assert.equal(fullBefore.view.encounterPacing.searchesUntilGuaranteed, 1);
       assert.ok(fullBefore.view.bagUsed >= fullBefore.view.bagCap);
@@ -849,7 +860,7 @@ test('probability API validates deployments and commits replay-safe rule actions
       };
       await seedCareer(saveDir, exitSid, career);
       const initial = (await call(game.base, exitSid, '/api/state')).payload;
-      assertRaid(initial);
+      assertRaid(initial, 3);
       assert.equal(initial.view.pendingLoot.length, 1);
       const blocked = initial.view.event.actions.find(action => action.endsRaid === true);
       assert.equal(blocked?.disabled, true);
@@ -904,7 +915,7 @@ test('probability API validates deployments and commits replay-safe rule actions
       };
       await seedCareer(saveDir, resourceSid, career);
       const before = (await call(game.base, resourceSid, '/api/state')).payload;
-      assertRaid(before);
+      assertRaid(before, 3);
       assert.equal(before.view.event.typeLabel, '资源机会');
       const action = before.view.event.actions.find(choice => choice.id === 'event:trade-wind');
       assert.equal(action?.disabled, false);
@@ -1247,7 +1258,7 @@ test('probability API validates deployments and commits replay-safe rule actions
       await seedCareer(saveDir, activeSid, activeCareer);
       const before = JSON.parse(await fs.readFile(activePath, 'utf8')).run;
       const current = (await call(game.base, activeSid, '/api/state')).payload;
-      assertRaid(current);
+      assertRaid(current, 3);
       assert.equal(current.view.raidId, before.raidId);
       assert.equal(current.view.revision, before.revision);
       assert.equal(current.view.difficulty.id, before.difficultyId);
@@ -1261,7 +1272,7 @@ test('probability API validates deployments and commits replay-safe rule actions
       assert.equal(oldAfterRestart.hub.items.find(item => item.id === 'dataset')?.storedCount, 1);
       assert.equal(oldAfterRestart.hub.overflow.find(item => item.id === 'dataset')?.count, 2);
       const activeAfterRestart = (await call(game.base, activeSid, '/api/state')).payload;
-      assertRaid(activeAfterRestart);
+      assertRaid(activeAfterRestart, 3);
       assert.equal(activeAfterRestart.view.revision, before.revision);
       assert.equal(JSON.parse(await fs.readFile(activePath, 'utf8')).run.rngState, before.rngState);
       await assert.rejects(fs.access(`${activePath}.pre-current.bak`), { code: 'ENOENT' });
