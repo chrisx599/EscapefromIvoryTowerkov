@@ -44,6 +44,9 @@ let activeWorkspace = 'prepare';
 let renderedGamePhase = null;
 const itemZones = new Map();
 const selectedItems = new Map();
+let stashSort = false, stashBatch = false, shopCategory = "all";
+const batchItems = new Set();
+const categoryOf = item => item.slot ? "equipment" : item.use ? "supplies" : "materials";
 const QUALITY_NAMES = { common: '普通', uncommon: '精良', rare: '稀有', epic: '史诗', standard: '研究物资' };
 let equipmentPickerSlot = null;
 let equipmentPickerSource = 'owned';
@@ -143,16 +146,17 @@ function renderItemZone(zone, containerSelector, detailSelector, entries, emptyT
   container.innerHTML = entries.map(entry => {
     const item = entry.item || {};
     const quality = Object.hasOwn(QUALITY_NAMES, item.rarity) ? item.rarity : 'standard';
-    const chosen = String(entry.key) === selectedItems.get(zone);
+    const chosen = zone === 'stash' && stashBatch ? batchItems.has(String(entry.key)) : String(entry.key) === selectedItems.get(zone);
     const name = item.name || entry.name || '空槽';
     const count = entry.count == null ? 1 : entry.count;
     const label = [name, entry.empty ? '空槽' : '数量 ' + count, QUALITY_NAMES[quality], entry.state || '', entry.reason || ''].filter(Boolean).join('，');
     return '<button type="button" class="item-cell quality-' + quality + (chosen ? ' is-selected' : '') + (entry.empty ? ' empty-cell' : '')
       + '" data-item-zone="' + attr(zone) + '" data-item-key="' + attr(entry.key) + '" data-item-id="' + attr(item.id || '') + '"'
+      + (zone === 'stash' && stashBatch && item.unitPacked ? ' disabled' : '')
       + (entry.index == null ? '' : ' data-item-index="' + attr(entry.index) + '"') + ' aria-pressed="' + chosen + '" aria-label="' + attr(label) + '" title="' + attr(label) + '">'
       + (entry.empty ? '<span class="empty-slot-symbol" aria-hidden="true">＋</span>' : itemIconHtml(item, 'item-icon-large'))
       + '<span class="cell-name">' + esc(zone === 'bag' || zone === 'pending' ? ({dataset:'数据包',src_code:'源码',compute:'算力卡',wind:'情报',coffee_ticket:'咖啡券',stomach_pill:'胃药',coop:'合作意向'}[item.id] || name) : name) + '</span>'
-      + (entry.empty ? '' : '<span class="cell-count">' + (zone === 'shop' || zone === 'equipment-shop' ? '持有 ' : '×') + number(count) + '</span>')
+      + (entry.empty || zone === 'stash' ? '' : '<span class="cell-count">' + (zone === 'shop' || zone === 'equipment-shop' ? '持有 ' : '×') + number(count) + '</span>')
       + (entry.state ? '<span class="cell-state">' + esc(entry.state) + '</span>' : '')
       + (entry.price == null ? '' : '<span class="cell-price">' + number(entry.price) + '</span>') + '</button>';
   }).join('') || '<div class="empty item-grid-empty">' + esc(emptyText) + '</div>';
@@ -164,11 +168,12 @@ function renderItemDetail(zone) {
   if (!detail) return;
   const entry = context.entries.find(row => String(row.key) === selectedItems.get(zone));
   if (!entry) {
-    if (zone === 'bag' || zone === 'pending') { detail.replaceChildren(); detail.hidden = true; return; }
+    if (zone === 'bag' || zone === 'pending' || zone === 'stash') { detail.replaceChildren(); detail.hidden = true; return; }
     detail.innerHTML = '<div class="item-detail-placeholder"><strong>选择一个物品</strong><p>点击格子查看用途和可用操作。</p></div>';
     return;
   }
   const item = entry.item || {};
+  detail.hidden = false;
   if (zone === 'bag') {
     detail.hidden = false;
     detail.innerHTML = '<div class="bag-selected-heading"><div><strong>'+esc(item.name || item.id)+'</strong> <small>'+number(item.weight || 0)+' 格</small></div><button type="button" data-close-bag-item aria-label="收起物品">×</button></div><div class="bag-selected-actions">'+(entry.actions || '')+'</div>';
@@ -198,6 +203,11 @@ function selectItemCell(button) {
   const zone = button.dataset.itemZone;
   const context = itemZones.get(zone);
   if (!context?.entries.some(entry => String(entry.key) === button.dataset.itemKey)) return;
+  if (zone === 'stash' && stashBatch) {
+    const key = button.dataset.itemKey;
+    if (batchItems.has(key)) batchItems.delete(key); else batchItems.add(key);
+    renderInventory(); return;
+  }
   // The result sides share one inspection panel.
   if (zone.startsWith('result-')) {
     selectedItems.delete('result-returned'); selectedItems.delete('result-lost');
@@ -493,6 +503,7 @@ function renderResearch() {
 function renderInventory() {
   const catalog = itemCatalog();
   const items = storedItems();
+  if (stashSort) items.sort((a,b) => categoryOf(a).localeCompare(categoryOf(b)) || String(a.name).localeCompare(String(b.name), "zh"));
   const loadout = hub.loadout || {};
   const slots = ['bag', 'focus', 'tool', 'device', 'storage'];
   $('#loadout-count').textContent = Object.values(loadout).filter(Boolean).length + ' / ' + slots.length + ' 槽';
@@ -516,9 +527,17 @@ function renderInventory() {
 
   $('#stash-count').textContent = number(hub.stashUsed) + ' / ' + number(hub.stashCap) + ' 格';
   renderWarehouseUpgrade();
-  renderItemZone('stash', '#hub-stash', '#stash-item-detail', items.map(item => {
+  const units = items.flatMap(item => Array.from({length: Number(item.count)}, (_, index) => ({...item, count: 1, unitIndex: index, unitPacked: index < Number(item.packedCount || 0)})));
+  const validKeys = new Set(units.map(item => item.id + ':' + item.unitIndex));
+  for (const key of batchItems) if (!validKeys.has(key)) batchItems.delete(key);
+  $('#stash-batch').textContent = stashBatch ? '完成' : '批量';
+  $('#stash-bulk-sell').hidden = !stashBatch;
+  $('#stash-select-all').hidden = !stashBatch;
+  $('#stash-bulk-sell').textContent = '出售所选 ' + batchItems.size;
+  $('#stash-bulk-sell').disabled = !batchItems.size || pending || uncertainMutation;
+  renderItemZone('stash', '#hub-stash', '#stash-item-detail', units.map(item => {
     const equipped = Boolean(item.equipped || item.equippedSlots && item.equippedSlots.length);
-    const packed = Number(item.packedCount || 0);
+    const packed = Number(item.unitPacked);
     let actions = '';
     if (item.slot) actions += hubButton('equip:' + item.id, equipped ? '已装备' : '装备到' + (SLOT_LABELS[item.slot] || item.slot), equipped, equipped ? '已经装备' : '');
     if (item.use) {
@@ -529,11 +548,11 @@ function renderInventory() {
     const sellDisabled = Number(item.count || 0) <= packed;
     const sellReason = sellDisabled ? '预留补给不能出售' : '';
     actions += hubButton('sell:' + item.id, '出售 +' + number(item.sellPrice ?? item.value ?? 0), sellDisabled, sellReason);
-    return { key: item.id, item, count: item.count, state: equipped ? '备用同款' : packed ? '预留 ' + packed : '',
+    return { key: item.id + ':' + item.unitIndex, item, count: 1, state: packed ? '预留' : '',
       description: bonusText(item) + (packed ? ' 其中 ' + packed + ' 件已预留，不能出售或再次预留。' : ''), actions };
   }), '仓库为空。');
 
-  renderItemZone('shop', '#hub-shop', '#shop-item-detail', (hub.shop || []).map(item => {
+  renderItemZone('shop', '#hub-shop', '#shop-item-detail', (hub.shop || []).filter(item => shopCategory === 'all' || categoryOf(item) === shopCategory).map(item => {
     const stageLocked = Number(item.minStage || 0) > Number(hub.research?.stage || 0);
     const tooExpensive = Number(hub.funding || 0) < Number(item.price || 0);
     const reason = stageLocked ? equipmentStageReason(item) : tooExpensive ? '经费不足，需要 ' + number(item.price) : '';
@@ -563,16 +582,13 @@ function renderWarehouseUpgrade() {
   const button = $('#warehouse-upgrade-button');
   if (!button) return;
   const maximum = upgrade && Number(upgrade.level) >= Number(upgrade.maxLevel);
-  $('#warehouse-level').textContent = upgrade ? number(Number(upgrade.level) + 1) + ' / ' + number(Number(upgrade.maxLevel) + 1) : '—';
-  $('#warehouse-upgrade-summary').textContent = !upgrade ? '同步进度后可查看扩容方案。' : maximum ? '已达到最大容量 ' + number(hub.stashCap) + ' 格。'
-    : '再增加 ' + number(Number(upgrade.nextCap) - Number(upgrade.currentCap)) + ' 格：' + number(upgrade.currentCap) + ' → ' + number(upgrade.nextCap) + ' 格';
-  $('#warehouse-upgrade-price').textContent = !upgrade || maximum ? '' : number(upgrade.cost) + ' 经费';
-  $('#warehouse-upgrade-price').closest('.warehouse-upgrade-price')?.classList.toggle('hidden', !upgrade || maximum);
   const disabled = !upgrade || maximum || Boolean(upgrade.disabled);
   button.dataset.serverDisabled = String(disabled);
   button.disabled = disabled || pending || uncertainMutation;
-  button.textContent = maximum ? '仓库已满级' : upgrade ? '花 ' + number(upgrade.cost) + ' 经费扩容' : '等待仓库配置';
-  $('#warehouse-upgrade-reason').textContent = upgrade?.reason || '';
+  button.textContent = maximum ? '已满级' : upgrade ? '扩容 +20 · ' + number(upgrade.cost) + ' 经费' : '加载中';
+  $('#warehouse-upgrade-summary').textContent = upgrade && !maximum ? number(upgrade.currentCap) + ' → ' + number(upgrade.nextCap) + ' 格' : '';
+  $('#warehouse-upgrade-reason').textContent = upgrade?.disabled && !maximum ? '经费不足' : '';
+
 }
 
 function exitAction(action) { return action.endsRaid === true || action.id === 'event:leave' || action.id === 'respond:leave'; }
@@ -965,3 +981,15 @@ $('#workspace-nav')?.addEventListener('keydown', event => {
   if (next) { event.preventDefault(); selectWorkspace(next, true); }
 });
 readState();
+
+$('#stash-sort').addEventListener('click', () => { stashSort = !stashSort; $('#stash-sort').textContent = stashSort ? '原顺序' : '整理'; renderInventory(); });
+$('#stash-batch').addEventListener('click', () => { stashBatch = !stashBatch; batchItems.clear(); renderInventory(); });
+$('#stash-select-all').addEventListener('click', () => { const entries = itemZones.get('stash')?.entries || []; const all = entries.filter(e => !e.item.unitPacked).map(e => String(e.key)); if(all.every(k => batchItems.has(k))) batchItems.clear(); else all.forEach(k => batchItems.add(k)); renderInventory(); });
+$('#stash-bulk-sell').addEventListener('click', () => {
+  const counts = {};
+  for (const entry of itemZones.get('stash')?.entries || []) if (batchItems.has(String(entry.key)) && !entry.item.unitPacked) counts[entry.item.id] = (counts[entry.item.id] || 0) + 1;
+  if (!Object.keys(counts).length) return;
+  submitApi('/api/hub/action', { action: 'sell-batch:' + JSON.stringify(counts) }, '正在出售……');
+  batchItems.clear();
+});
+$('#shop-categories').addEventListener('click', event => { const button = event.target.closest('[data-shop-category]'); if (!button) return; shopCategory = button.dataset.shopCategory; for(const b of $('#shop-categories').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b === button)); selectedItems.delete('shop'); renderInventory(); });

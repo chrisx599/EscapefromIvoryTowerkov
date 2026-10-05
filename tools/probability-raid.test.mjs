@@ -44,7 +44,10 @@ function seedForRange(low, high) {
 }
 
 function makeRun(options = {}) {
-  return createProbabilityRaid({ probabilityVersion: 3, seed: 123, ...options });
+  // These exact-value regressions preserve already-active v3 runs.
+  const run = createProbabilityRaid({ seed: 123, ...options });
+  run.probabilityVersion = 3; delete run.stage;
+  return run;
 }
 
 function makeNaturalRun(options = {}) {
@@ -133,10 +136,10 @@ test('natural material weights and venue extra drops use separate visible probab
   assert.ok(preview.materials.every(item => item.hitProbability > 0 && item.hitProbability <= preview.acquisition));
 });
 
-test('new probability runs use v3 natural material weights and expose no selected target or strategy', () => {
+test('new probability runs use v4 natural material weights and expose no selected target or strategy', () => {
   const run = createProbabilityRaid({ seed: 77 });
   const view = probabilityRaidView(run);
-  assert.equal(run.probabilityVersion, 3);
+  assert.equal(run.probabilityVersion, 4);
   assert.equal(Object.hasOwn(run, 'targetId'), false);
   assert.equal(Object.hasOwn(run, 'strategyId'), false);
   assert.equal(Object.hasOwn(view, 'target'), false);
@@ -154,7 +157,7 @@ test('new probability runs use v3 natural material weights and expose no selecte
   assert.ok(venue.pool.materials.some(row => row.id === 'compute'));
   assert.deepEqual(venue.difficultyPreviews.map(row => row.difficultyId), ['easy', 'normal', 'hard']);
   assert.ok(venue.difficultyPreviews.every(row => row.materials.length === 4));
-  assert.equal(probabilitySetup({ research: { stage: 0 } }).venues[0].difficultyPreviews[1].acquisition, 65,
+  assert.equal(probabilitySetup({ research: { stage: 0 } }).venues[0].difficultyPreviews[1].acquisition, 56,
     'partial profiles without saved skills still produce a safe default preview');
 
   const equipped = createCareer(43);
@@ -164,8 +167,8 @@ test('new probability runs use v3 natural material weights and expose no selecte
   const equippedSetup = careerView(equipped).probabilitySetup;
   const normalPreview = equippedSetup.venues.find(row => row.id === 'conference')
     .difficultyPreviews.find(row => row.difficultyId === 'normal');
-  assert.equal(normalPreview.acquisition, 77, 'setup preview uses the same research skill level as deployment');
-  assert.equal(normalPreview.materials.find(row => row.id === 'wind').weight, 1.1);
+  assert.equal(normalPreview.acquisition, 68.1, 'setup preview uses the same research skill level as deployment');
+  assert.equal(normalPreview.materials.find(row => row.id === 'wind').weight, 1.2);
   assert.equal(deployProbability(equipped, { seed: 43, venue: 'conference', difficulty: 'normal' }).ok, true);
   const deployedView = probabilityRaidView(equipped.run);
   assert.equal(deployedView.probabilities.acquisition, normalPreview.acquisition);
@@ -698,7 +701,7 @@ test('a finite supply restores will without changing risk, time, or equipment', 
   assert.deepEqual(run.bag, []);
 });
 
-test('v3 career deploy deducts venue fee and supplies but only references permanent equipment', () => {
+test('v4 career deploy deducts venue fee and supplies but only references permanent equipment', () => {
   const career = createCareer(12);
   career.profile.funding = 200;
   career.profile.research.stage = 4;
@@ -711,7 +714,7 @@ test('v3 career deploy deducts venue fee and supplies but only references perman
   assert.equal(career.profile.stash.coffee_ticket, 1);
   assert.equal(career.profile.supplies.length, 0);
   assert.equal(career.run.mode, 'probability');
-  assert.equal(career.run.probabilityVersion, 3);
+  assert.equal(career.run.probabilityVersion, 4);
   assert.equal(career.run.difficultyId, 'hard');
   assert.equal(career.run.targetId, undefined);
   assert.equal(career.run.strategyId, undefined);

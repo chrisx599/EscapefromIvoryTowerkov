@@ -33,9 +33,16 @@ const raidAction = (run, id) => {
 };
 
 function materialFixture() {
-  const career = createCareer(123456789);
-  for (const id of ['dataset', 'src_code', ...Array(7).fill('compute')]) action(career, `buy:${id}`);
-  return career;
+  // Find a genuine successful first-review seed rather than assume every eligible
+  // review passes. The balance browser independently covers failure and retries.
+  for (let seed = 1; seed <= 256; seed++) {
+    const career = createCareer(seed * 7919);
+    for (const id of ['dataset', 'src_code', ...Array(7).fill('compute')]) action(career, `buy:${id}`);
+    const candidate = structuredClone(career);
+    finishPaper(candidate.profile, { start: 'replicate' });
+    if (hubAct(candidate, 'research:promote').promoted) return career;
+  }
+  throw new Error('No naturally successful first promotion seed');
 }
 
 function readyForPromotionFixture() {
@@ -62,6 +69,7 @@ function legacyTalentFixture(id, used = false) {
   action(career, 'research:promote');
   career.profile.research.talent = { id, rank: 1 };
   career.run = createProbabilityRaid({ seed: 7919, raidId: `legacy-${id}-${used}`, difficulty: 'easy', talent: { id, rank: 1 }, network: 2 });
+  career.run.probabilityVersion = 3; delete career.run.stage;
   career.run.bag = ['dataset', 'src_code', 'wind'];
   if (id === 'connector') career.run.event = { id: 'legacy-network', type: 'npc', name: '同学', title: '合作边界', text: '商议合作。', choices: [] };
   if (used) raidAction(career.run, id === 'connector' ? 'event:talent-negotiate' : `talent:${id === 'archivist' ? 'archive' : 'convert'}:0`);

@@ -106,7 +106,7 @@ function createResearchJourneyFixtures() {
   delete missing.profile.stash.compute;
   const equipmentMissing = structuredClone(supplied);
   equipmentMissing.profile.loadout.device = null;
-  act(supplied, 'experiment');
+  while (nextResearchAction(supplied.profile.research) === 'experiment') act(supplied, 'experiment');
   const submit = structuredClone(supplied);
   act(supplied, 'submit');
   const review = structuredClone(supplied);
@@ -119,20 +119,21 @@ function createResearchJourneyFixtures() {
   const ready = structuredClone(supplied);
   act(supplied, 'publish');
   const promotion = structuredClone(supplied);
+  promotion.profile.research.rng = 1; // Controlled passing review for milestone UI; randomized failures are covered by balance-browser.
   assert.equal(careerView(promotion).research.actions.find(action => action.id === 'research:promote').disabled, false,
     'promotion fixture must earn all its real prerequisites');
   if (!returned) {
     for (let seed = 1; seed <= 256 && !returned; seed += 1) {
       const candidate = createCareer(seed * 7919);
       Object.assign(candidate.profile.stash, { dataset: 1, src_code: 1, compute: 12 });
-      for (const id of ['start:replicate', 'experiment', 'experiment', 'submit', 'review']) act(candidate, id);
+      for (const id of ['start:replicate', 'experiment', 'experiment', 'experiment', 'submit', 'review']) act(candidate, id);
       if (candidate.profile.research.project.status !== 'ready') returned = candidate;
     }
   }
   assert.ok(returned, 'the seeded research model must produce real returned reviews');
   const oldSix = structuredClone(returned);
   Object.assign(oldSix.profile.research.project, { runs: 6, submittedRuns: 6, quality: 25, status: 'rejected', direction: 'robotics', title: '机器人策略模型 · 基础复现研究 #1' });
-  for (const key of ['evidence', 'successfulRuns', 'setbacks', 'preparation', 'lastOutcome', 'automaticFit']) delete oldSix.profile.research.project[key];
+  for (const key of ['balanceVersion', 'evidence', 'successfulRuns', 'setbacks', 'preparation', 'lastOutcome', 'automaticFit']) delete oldSix.profile.research.project[key];
   const legacySix = migrateCareer(JSON.stringify(oldSix));
   return [
     { name: 'empty', career: empty, action: null },
@@ -588,7 +589,7 @@ async function clickHubAction(page, action) {
     if (!after.hub.items.some(item => item.id === itemId && Number(item.storedCount) > 0)) {
       assert.equal(await page.locator(`#hub-stash button.item-cell[data-item-zone="stash"][data-item-id="${itemId}"]`).count(), 0,
         'selling the last copy should remove its item cell');
-      assert.match(await page.locator('#stash-item-detail').innerText(), /选择.{0,4}物品|暂无/,
+      assert.equal(await page.locator('#stash-item-detail').textContent(), '',
         'selling out should clear stale stash details');
     }
   }
@@ -1000,7 +1001,11 @@ async function runLoadedBagEventScenario(browser, base, saveDir, pageErrors, ext
     assert.equal(deployProbability(career, { seed: seed * 7919, difficulty: 'normal' }).ok, true);
     for (let step = 0; step < 24 && career.run.status === 'playing'; step++) {
       const view = probabilityRaidView(career.run);
-      if (view.event && !view.pendingLoot.length && view.bag.length >= 4) { fixture = career; break; }
+      if (view.event && !view.pendingLoot.length && view.bag.length >= 4) {
+        const firstChoice = view.event.actions.find(row => !row.disabled && !row.endsRaid);
+        const previewed = structuredClone(career.run);
+        if (firstChoice && actProbabilityRaid(previewed, firstChoice.id).ok && previewed.status === 'playing') { fixture = career; break; }
+      }
       const choice = view.event?.actions.find(row => !row.disabled && !row.endsRaid && row.id !== 'event:story-decline');
       const command = view.pendingLoot.length ? 'take:available' : view.event ? choice?.id : 'search';
       if (!command) break;
@@ -1454,7 +1459,7 @@ async function assertResearchJourney(page, state, fixture) {
       const action = research.actions.find(action => action.id === fixture.action);
       const actionsText = await page.locator('#research-actions').innerText();
       assert.ok(actionsText.includes(String(research.project.experimentCost)), 'the next experiment should show its real funding cost');
-      assert.match(actionsText, /算力/, 'the experiment should show its consumed material before committing');
+      if (!research.project.supported) assert.match(actionsText, /算力/, 'the paid experiment should show its consumed material before committing');
       if (action.disabled) {
         for (const reason of action.reason.split('；').filter(Boolean)) {
           assert.ok((await card.innerText()).includes(reason), `blocked experiment should expose its exact server prerequisite: ${reason}`);
@@ -1481,7 +1486,7 @@ async function assertResearchJourney(page, state, fixture) {
     assert.ok((await cell.innerText()).includes(description));
   }
   if (fixture.name === 'legacy-six-round') {
-    assert.equal(research.project.automaticFit, false);
+    assert.equal(fixture.career.profile.research.project.automaticFit, false);
     assert.equal(research.project.title, '机器人策略模型 · 基础复现研究 #1', 'legacy project title is preserved');
   }
   assert.deepEqual(research.directions, {}); assert.deepEqual(research.preparations, []);
@@ -1555,14 +1560,15 @@ async function runResearchJourneyScenarios(browser, base, saveDir, pageErrors, e
         const after = await clickHubAction(page, startAction);
         page.off('request', observe);
         assert.equal(after.hub.funding, state.hub.funding - template.cost);
-        assert.equal(after.hub.research.project.automaticFit, true);
+        const savedResearch = JSON.parse(await fs.readFile(path.join(saveDir, `${sid}.json`), 'utf8')).profile.research;
+        assert.equal(savedResearch.project.automaticFit, true);
         for (const item of beforeItems) {
           const count = after.hub.items.find(row => row.id === item.id)?.storedCount || 0;
           assert.equal(count, item.storedCount - (plan[item.id] || 0), `start must spend exactly the shown ${item.name} count`);
         }
-        assert.equal(after.hub.research.project.preparation, fixture.name === 'raw-evaluation' ? 2 : 1);
-        if (fixture.name === 'legacy-notes') assert.deepEqual(after.hub.research.prepared, { dataset: 1, wind: 1 });
-        if (fixture.name === 'raw-notes') assert.deepEqual(after.hub.research.prepared, { dataset: 2, wind: 1 },
+        assert.equal(savedResearch.project.preparation, fixture.name === 'raw-evaluation' ? 2 : 1);
+        if (fixture.name === 'legacy-notes') assert.deepEqual(savedResearch.prepared, { dataset: 1, wind: 1 });
+        if (fixture.name === 'raw-notes') assert.deepEqual(savedResearch.prepared, { dataset: 2, wind: 1 },
           'a raw input already supplies its preparation credit, so earned notes must remain for future canonical inputs');
         assert.ok(receipt?.requestId);
         const replay = await (await page.request.post('/api/hub/action', { data: receipt })).json();
@@ -1598,7 +1604,7 @@ async function runResearchJourneyScenarios(browser, base, saveDir, pageErrors, e
         assert.equal(after.hub.research.project.runs, state.hub.research.project.runs + 1, 'the primary experiment should add exactly one real run');
         assert.equal(after.hub.funding, state.hub.funding - state.hub.research.project.experimentCost, 'the primary experiment should charge its shown funding cost');
         assert.equal(after.hub.items.find(item => item.id === 'compute')?.storedCount,
-          state.hub.items.find(item => item.id === 'compute')?.storedCount - 1, 'the primary experiment should consume exactly one real compute card');
+          state.hub.items.find(item => item.id === 'compute')?.storedCount - (state.hub.research.project.experimentMaterials.compute || 0), 'the primary experiment should consume exactly the advertised compute cards');
         await assertReloadPreservesState(page, after, 'completed primary experiment');
       } else if (fixture.name === 'ready') {
         const after = await clickHubAction(page, fixture.action);
@@ -1634,11 +1640,11 @@ async function completeResearchThroughUi(page) {
   for (let i = 0; i < 4; i += 1) await clickHubAction(page, 'buy:compute');
 
   await activateWorkspace(page, 'inventory');
-  const datasetCell = page.locator('#hub-stash button.item-cell[data-item-zone="stash"][data-item-id="dataset"]');
+  const datasetCell = page.locator('#hub-stash button.item-cell[data-item-zone="stash"][data-item-id="dataset"]').first();
   await datasetCell.waitFor({ state: 'visible', timeout: 7000 });
   const datasetCount = datasetBefore + 2;
-  assert.match(await datasetCell.locator('.cell-count').innerText(), new RegExp(`×\\s*${datasetCount}`),
-    'same-kind stash items should aggregate into a visible count badge');
+  assert.equal(await page.locator('#hub-stash button.item-cell[data-item-zone="stash"][data-item-id="dataset"]').count(), datasetCount,
+    'each stored unit should occupy its own visible tile');
   await activateWorkspace(page, 'research');
 
   const template = page.locator('#research-templates [data-hub-action="research:start:replicate"]');
@@ -1664,7 +1670,7 @@ async function completeResearchThroughUi(page) {
       await clickHubAction(page, 'research:review');
     } else if (['experiment', 'revision', 'rejected'].includes(project.status)) {
       const next = nextResearchAction(research);
-      if (next === 'experiment' && !(current.hub.items.find(item => item.id === 'compute')?.storedCount > 0)) await clickHubAction(page, 'buy:compute');
+      if (next === 'experiment' && !project.supported && !(current.hub.items.find(item => item.id === 'compute')?.storedCount > 0)) await clickHubAction(page, 'buy:compute');
       await clickHubAction(page, `research:${next}`);
     } else {
       throw new Error(`unexpected project status: ${project.status}`);
@@ -1682,7 +1688,11 @@ async function completeResearchThroughUi(page) {
   await promotionWait;
   await page.waitForFunction(() => !document.body.classList.contains('is-pending'), null, { timeout: 7000 });
   after = await readState(page);
-  assert.ok(after.hub.research.stage >= 1, 'the published paper should unlock the master stage');
+  assert.ok([0, 1].includes(after.hub.research.stage), 'an eligible review either preserves the earned stage or awards the next stage');
+  if (after.hub.research.stage === 0) {
+    assert.ok(after.hub.research.promotionReview.lastOutcome);
+    assert.equal(after.hub.research.promotionReview.retryReady, false, 'an unsuccessful review requires genuinely new work');
+  }
   return after;
 }
 
@@ -1851,7 +1861,7 @@ try {
   const hardPreviewText = await activePage.locator('#setup-difficulty-description').innerText();
   assert.notEqual(hardPreviewText, normalPreviewText, 'choosing hard should update its neutral difficulty description');
   const hardDifficulty = state.hub.probabilitySetup.difficulties.find(row => row.id === 'hard');
-  assert.equal(hardDifficulty.eventModifier, -10, 'the internal hard-mode response penalty should remain intact');
+  assert.equal(hardDifficulty.eventModifier, -9, 'the balanced hard-mode response penalty should match the authoritative rules');
   await assertNoNumericProbabilities(activePage);
   await activateWorkspace(activePage, 'shop');
   await activateWorkspace(activePage, 'prepare');
@@ -2043,7 +2053,7 @@ try {
 
   state = await completeResearchThroughUi(activePage);
   assert.ok(state.hub.research.papers.length >= 1);
-  assert.ok(state.hub.research.stage >= 1, 'a real accepted paper should promote the researcher to the master stage');
+  assert.ok([0, 1].includes(state.hub.research.stage), 'a real accepted paper earns one probabilistic promotion review');
 
   await runLoadedBagEventScenario(browser, game.base, saveDir, pageErrors, externalRequests, responses);
   await runSingleSearchCommitScenario(browser, game.base, saveDir, pageErrors, externalRequests, responses);

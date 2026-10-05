@@ -29,7 +29,7 @@ function earnPaper(career, type = 'replicate') {
   const progress = finishPaper(career.profile, { start: type,
     act: id => { actions += 1; return hubAct(career, `research:${id}`); },
     onExperiment: project => {
-      const needed = 1 + project.scope;
+      const needed = project.balanceVersion >= 2 ? (project.runs >= 5 ? 0 : 1) : 1 + project.scope;
       while ((career.profile.stash.compute || 0) < needed) { act('buy:compute'); bought += 1; }
     } });
   return { actions, runs: progress.runs, bought, returns: progress.returns };
@@ -64,7 +64,7 @@ function checkedDeployment(career, options) {
   return career.run;
 }
 
-test('512 genuine first-paper paths reach promotion from the starter budget across all identity backgrounds', t => {
+test('512 genuine first-paper paths earn probabilistic promotion review from the starter budget across all identity backgrounds', t => {
   const metrics = { careers: 0, minRuns: Infinity, maxRuns: 0, minFundingBeforePromotion: Infinity, maxActions: 0 };
   const backgrounds = new Set();
   for (let seed = 1; seed <= 256; seed += 1) {
@@ -77,10 +77,10 @@ test('512 genuine first-paper paths reach promotion from the starter budget acro
       assert.ok(prePromotionFunding >= 90, `seed ${seed}/${type}: first paper should retain one basic experiment of funding before the title grant`);
       const promotion = careerView(career).research.actions.find(row => row.id === 'research:promote');
       assert.equal(promotion.disabled, false, promotion.reason);
-      checkedHub(career, 'research:promote');
-      assert.equal(career.profile.research.stage, 1);
+      const review = checkedHub(career, 'research:promote');
+      assert.equal(career.profile.research.stage, Number(review.promoted));
       assert.deepEqual(career.profile.research.papers, accepted, 'promotion must preserve the earned paper');
-      assert.ok(career.profile.funding > prePromotionFunding, 'first promotion should provide a tangible grant');
+      assert.equal(career.profile.funding, prePromotionFunding + (review.promoted ? 180 : 0), 'only an awarded title grants funding');
       const promoted = JSON.stringify(career);
       assert.equal(hubAct(career, 'research:promote').ok, false, 'one paper does not permit claiming a second promotion');
       assert.equal(JSON.stringify(career), promoted);
@@ -112,8 +112,9 @@ test('128 starter outings lead to a real first paper even after imperfect extrac
     assert.equal(JSON.stringify(persisted.profile), beforeRepeatedSettlement);
     const paper = earnPaper(persisted);
     const funds = persisted.profile.funding;
-    checkedHub(persisted, 'research:promote');
-    assert.equal(persisted.profile.research.stage, 1);
+    const review = checkedHub(persisted, 'research:promote');
+    assert.equal(persisted.profile.research.stage, Number(review.promoted));
+    assert.equal(persisted.profile.funding, funds + (review.promoted ? 180 : 0));
     assert.ok(funds >= 90, `seed ${seed}: a short opening expedition must not make promotion unaffordable`);
     metrics.careers += 1;
     metrics[outing.kind] += 1;
@@ -126,9 +127,10 @@ test('128 starter outings lead to a real first paper even after imperfect extrac
   t.diagnostic(JSON.stringify({ ...metrics, distinctOpeningEvents: events.size }));
 });
 
-test('first promotion is a direct earned title with no faction choice, durable and guarded during raids', () => {
+test('a successful promotion review grants an earned title with no faction choice, durable and guarded during raids', () => {
   const career = createCareer(7919);
   earnPaper(career);
+  career.profile.research.rng = 1; // Controlled passing draw for post-promotion guard regressions.
   checkedHub(career, 'research:promote');
   assert.equal(career.profile.research.stage, 1);
   for (const talent of [...TALENTS, '__proto__', 'constructor', 'missing']) {

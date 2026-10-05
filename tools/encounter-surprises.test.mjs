@@ -277,3 +277,44 @@ test('successful conversations preserve contact progress and can earn bounded us
   assert.equal(networkEarned, true);
   assert.equal(contactRecorded, true);
 });
+
+test('authored encounter decks provide 144 distinct, scene-specific narrative outcomes', () => {
+  const ids = [
+    'v2-prof-audit', 'v2-peer-collab', 'v2-engineer-credit', 'v2-resource-data-swap',
+    'v2-resource-compute-demo', 'v2-resource-code-share', 'v2-tech-terminal',
+    'v2-tech-data-corruption', 'v2-tech-access-conflict', 'v2-route-crowd',
+    'v2-route-shuttle', 'v2-route-badge-check', 'v2-npc-replication-clinic',
+    'v2-npc-collaboration-invite', 'v2-npc-review-challenge', 'v2-resource-demo-sample',
+    'v2-resource-source-code', 'v2-resource-credit-broker', 'v2-technical-missing-driver',
+    'v2-technical-data-leak', 'v2-technical-cache-error', 'v2-route-crowd-pressure',
+    'v2-route-shuttle-delay', 'v2-route-badge-inspection',
+  ];
+  const narratives = new Set(); const kinds = new Set(); const prompts = new Set();
+  for (const id of ids) {
+    for (const draw of [0, 0.4, 0.8]) {
+      // One resource response consumes the exact original seven draws: four
+      // numeric checks, success prose, recovery check, failure prose.
+      let calls = 0;
+      const source = { ...fixture(), id, choices: [fixture().choices[0]] };
+      const event = prepareSurpriseEncounter({ encounterVersion: 2 }, source, () => { calls++; return draw; });
+      assert.equal(calls, 7, `${id}: prose must not change the gameplay RNG stream`);
+      prompts.add(event.prompt);
+      const choice = event.choices[0];
+      for (const outcome of [choice.onSuccess, choice.onFailure]) {
+        narratives.add(outcome.text); kinds.add(outcome.kind);
+        assert.ok(outcome.brief.length <= 24);
+      }
+      assert.equal(choice.onSuccess.rewardId, 'dataset');
+      assert.equal(choice.check.base, 50 + Math.floor(draw * 22));
+      assert.equal(choice.onSuccess.riskDelta, -(2 + Math.floor(draw * 5)));
+      assert.equal(choice.onFailure.riskDelta, 4 + Math.floor(draw * 5));
+      assert.equal(choice.onFailure.willDelta, -(1 + Math.floor(draw * 2)));
+      assert.ok(event.prompt.length <= 30);
+      assert.ok(choice.name.length <= 10);
+      assert.doesNotMatch(choice.name, /获得|消耗|风险|安全|保证|概率|奖励/);
+    }
+  }
+  assert.equal(prompts.size, 24);
+  assert.equal(narratives.size, 144);
+  assert.equal(kinds.size, 144);
+});

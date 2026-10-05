@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCareer, migrateCareer } from '../src/career.js';
 import { normalizeResearch, researchAct, researchView, researchScope, PROJECTS, PROMOTION_GRANTS } from '../src/research.js';
-import { researchFactors, experimentOutcome, reviewOutcome } from '../src/research-factors.js';
+import { nextResearchAction } from './research-qa.mjs';
+import { researchFactors, experimentOutcome, reviewOutcome, legacyExperimentOutcome, legacyReviewOutcome } from '../src/research-factors.js';
 
 function supplied(seed = 2463534242, stage = 0) {
   const p = createCareer(seed).profile;
@@ -19,7 +20,7 @@ function finish(p) {
     if (project.status === 'ready') return checked(p, 'publish');
     if (project.status === 'submitted') { checked(p, 'review'); continue; }
     checked(p, 'experiment');
-    if (project.runs >= 2) checked(p, 'submit');
+    if (nextResearchAction(p.research) === 'submit') checked(p, 'submit');
   }
   assert.fail('Research did not reach publication within the repair bound');
 }
@@ -50,39 +51,39 @@ test('review decisions combine work quality, evidence, preparation, expression, 
   assert.notEqual(reviewOutcome({ quality: 100, evidence: 0 }, 1, 'finetune').status, 'ready', 'quality alone does not manufacture evidence');
 });
 
-test('factors remain bounded and ordinary repair guarantees acceptance even under worst draws', () => {
+test('legacy active-project factors preserve their guaranteed recovery contract', () => {
   for (const type of Object.keys(PROJECTS)) for (let scope = 0; scope <= 2; scope++) {
     const f = { quality: 0, evidence: 0, engineering: 1, research: 1, expression: 1, scope };
     for (let run = 0; run < 17; run++) {
-      const outcome = experimentOutcome(f, 1);
+      const outcome = legacyExperimentOutcome(f, 1);
       assert.ok(outcome.qualityGain >= 8 && outcome.qualityGain <= 50);
       assert.ok(outcome.evidenceGain >= 6 && outcome.evidenceGain <= 50);
       f.quality = Math.min(100, f.quality + outcome.qualityGain);
       f.evidence = Math.min(100, f.evidence + outcome.evidenceGain);
     }
     assert.equal(f.quality, 100); assert.equal(f.evidence, 100);
-    assert.equal(reviewOutcome(f, 0, type).status, 'ready');
+    assert.equal(legacyReviewOutcome(f, 0, type).status, 'ready');
   }
   const extreme = researchFactors(Object.fromEntries(['quality', 'evidence', 'engineering', 'research', 'expression', 'preparation', 'equipment', 'headroom', 'experience', 'scope', 'support'].map(key => [key, 1e9])));
   assert.deepEqual(extreme, { quality: 100, evidence: 100, engineering: 10, research: 10, expression: 10, preparation: 2,
-    equipment: 12, headroom: 2, experience: 30, topicFit: false, scope: 2, support: 6 });
+    equipment: 12, headroom: 2, experience: 30, topicFit: false, scope: 2, support: 6, stage: 0, runs: 0, reviewFailures: 0, repair: false });
   for (const invalid of [NaN, Infinity, -Infinity, 'bad', null]) {
-    const result = experimentOutcome({ quality: invalid, evidence: invalid, engineering: invalid }, invalid);
+    const result = legacyExperimentOutcome({ quality: invalid, evidence: invalid, engineering: invalid }, invalid);
     assert.ok(Number.isFinite(result.qualityGain) && Number.isFinite(result.evidenceGain));
   }
 });
 
-test('a fresh all-shop first paper fits 800 funding even with every experimental and review setback', () => {
+test('a legacy all-shop first paper fits 800 funding even with every experimental and review setback', () => {
   const f = { quality: 25, evidence: 0, engineering: 1, research: 1, expression: 1, experience: 0 };
   for (let run = 1; run <= 7; run++) {
-    const outcome = experimentOutcome(f, 1);
+    const outcome = legacyExperimentOutcome(f, 1);
     f.quality = Math.min(100, f.quality + outcome.qualityGain);
     f.evidence = Math.min(100, f.evidence + outcome.evidenceGain);
     f.experience += 1;
     f.engineering = f.research = Math.min(10, 1 + Math.floor(run * 2 / 3));
   }
   // No repeated submissions or extra expression XP is necessary for this bound.
-  assert.equal(reviewOutcome(f, 0, 'replicate').status, 'ready');
+  assert.equal(legacyReviewOutcome(f, 0, 'replicate').status, 'ready');
   assert.equal(40 + 50 + 30 + 7 * (60 + 30), 750);
 });
 
@@ -114,7 +115,7 @@ test('blocked and malformed research actions are atomic, including RNG, learning
   p.stash.compute = 0; same('experiment');
   p.stash.compute = 5; p.funding = 0; same('experiment');
   p.funding = 1000; same('submit'); same('review'); same('publish');
-  checked(p, 'experiment'); checked(p, 'experiment'); checked(p, 'submit');
+  while (nextResearchAction(p.research) === 'experiment') checked(p, 'experiment'); checked(p, 'submit');
   same('experiment'); same('submit');
   checked(p, 'review'); same('review');
   if (p.research.project.status !== 'ready') same('submit');
@@ -127,7 +128,7 @@ test('saved RNG resumes the same experiment and review without view-driven rerol
   const before = JSON.stringify(p.research);
   for (let read = 0; read < 10; read++) researchView(p);
   assert.equal(JSON.stringify(p.research), before);
-  for (const action of ['experiment', 'submit', 'review']) {
+  for (const action of ['experiment', 'experiment', 'submit', 'review']) {
     checked(p, action); checked(restored, action);
     assert.deepEqual(restored.research, p.research, action);
   }
@@ -147,7 +148,7 @@ test('learning survives abandonment and rejected legacy projects recover beyond 
   checked(p, 'experiment'); assert.equal(p.research.project.runs, 7);
   finish(p);
   assert.equal(p.research.papers.at(-1).id, 'paper-40');
-  assert.ok(p.research.methods.replicate > learned);
+  assert.equal(p.research.methods.replicate, learned, 'recovery preserves prior method learning without farming beyond the paid-run cap');
 });
 
 test('every former faction migrates at its earned rank with no reset, compounded benefit or reward', () => {
@@ -189,6 +190,7 @@ test('portfolio promotion accepts either representative evidence or practice and
     if (route === 'paper') { p.research.papers[0].quality = 80; p.research.papers[0].evidence = 65; }
     else p.research.methods.replicate = 2;
     const funds = p.funding;
+    p.research.rng = 1; // Reward accounting under a controlled passing review.
     checked(p, 'promote');
     assert.equal(p.funding, funds + PROMOTION_GRANTS[1]);
     assert.equal(p.research.rewardedStage, 1); assert.equal(p.research.stage, 1);
@@ -269,7 +271,7 @@ test('the three compact skill explanations correspond to real effects and promot
       quality: 100, evidence: 100, title: '已录用论文', credit: 60, day: 1 }));
     p.achievement = 240; p.research.methods.replicate = 30;
     p.research.skills = { engineering: 27, research: 27, expression: 27 };
-    p.research.skills[key] = 0;
+    p.research.skills[key] = 0; p.research.skillFloors[key] = 1;
     assert.equal(researchAct(p, 'promote').ok, false, `${key} gates promotion`);
     p.research.skills[key] = 27;
     assert.equal(researchAct(p, 'promote').ok, true, `${key} is the remaining promotion requirement`);

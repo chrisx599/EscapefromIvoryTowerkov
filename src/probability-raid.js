@@ -4,6 +4,8 @@ import { DIRECTIONS, skillLevels } from './research.js';
 import { likelihoodLabel, riskLabel, encounterLabel } from '../public/expedition-language.js';
 import { CAREER_TALENTS } from '../public/career-talents.js';
 import { prepareSurpriseEncounter } from './encounter-surprises.js';
+import { RAID_BALANCE_VERSION, RAID_DIFFICULTIES, raidSearchProbability, raidRiskAfterSearch,
+  raidExtractionProbabilities, raidEventProbability, raidExtraDropChance } from './raid-balance.js';
 import { normalizeStories, academicStoriesView, academicStoryCandidates, academicStoryWeight,
   academicStoryCallbackReady, storyResolutionAllowed, recordAcademicStory, withAcademicStoryEcho } from './academic-stories.js';
 export { normalizeStories } from './academic-stories.js';
@@ -532,8 +534,35 @@ function venueFor(run) {
   return VENUES[run.venueId] || VENUES.conference;
 }
 
+function usesBalancedRules(run) {
+  return Number(run?.probabilityVersion) === RAID_BALANCE_VERSION;
+}
+
 function difficultyFor(run) {
-  return DIFFICULTIES[run?.difficultyId] || DIFFICULTIES.normal;
+  const definitions = usesBalancedRules(run) ? RAID_DIFFICULTIES : DIFFICULTIES;
+  return definitions[run?.difficultyId] || definitions.normal;
+}
+
+// Build a read-only snapshot for the pure v4 formulas. No new random draws or
+// migrations are needed, so a saved v3 event keeps its exact old resolution.
+function balanceInput(run, approachId = 'steady') {
+  const venue = venueFor(run);
+  const context = contextModifiers(run, approachId);
+  const bonuses = loadBonuses(run);
+  return {
+    difficulty: run.difficultyId, stage: run.stage,
+    research: skill(run, 'research'), engineering: skill(run, 'engineering'), expression: skill(run, 'expression'),
+    risk: run.stats?.risk, will: run.stats?.will, willMax: run.stats?.willMax,
+    load: bagWeight(run), capacity: capacityFor(run), depth: context.state.depth,
+    searches: (run.history || []).filter(id => id === 'container:search:probability').length,
+    venueDifficulty: venue.difficulty, venueMinStage: venue.minStage, venueBaseRisk: venue.baseRisk, venueGrowth: venue.growth,
+    contextAcquisition: context.acquisition, contextRisk: context.risk, contextCheck: context.check,
+    // Legacy context bundles depth into these numbers; v4 accounts for it once.
+    contextFail: context.fail - context.state.depth * 1.25,
+    contextPartial: context.partial - context.state.depth * 2,
+    contextExtraDrop: context.extra, baseExtraDrop: venue.extraDrop * 100,
+    support: run.support, storageBonus: bonuses.storage, searchGear: bonuses.search,
+  };
 }
 
 function capacityFor(run) {
@@ -577,11 +606,20 @@ function loadBonuses(run) {
     for (const [target, value] of Object.entries(mapped?.collection || {})) collection[target] = (collection[target] || 0) + value;
     for (const [action, value] of Object.entries(mapped?.event || {})) event[action] = (event[action] || 0) + value;
   }
+  const balanced = usesBalancedRules(run);
+  // Collection gear improves both useful yield and its specialty's share.
+  // Slot normalization prevents stacking device tiers; the sum still has a cap.
+  const search = [...set].reduce((sum, id) => sum + ({
+    lightweight_laptop: 1, gpu_workstation: 2, remote_terminal: 3,
+    citation_scanner: 1.5, literature_assistant: 1, experiment_tracker: 1, data_cleaner: 2,
+  }[id] || 0), 0);
+  if (balanced) for (const id of Object.keys(collection)) collection[id] *= 2;
   return {
     collection,
     event,
-    communication: set.has('foam_earplugs') || set.has('noise_headphones') ? 5 : 0,
-    storage: set.has('encrypted_ssd') ? 4 : 0,
+    search: balanced ? Math.min(4, search) : 0,
+    communication: set.has('noise_headphones') ? 5 : set.has('foam_earplugs') ? (balanced ? 3 : 5) : 0,
+    storage: set.has('encrypted_ssd') ? (balanced ? 3 : 4) : 0,
     backup: set.has('backup_device'),
   };
 }
@@ -600,6 +638,7 @@ function materialWeightBonus(run, id) {
 }
 
 function extraDropChance(run, approachId = 'steady') {
+  if (usesBalancedRules(run)) return raidExtraDropChance(balanceInput(run, approachId));
   const base = Math.max(0, Number(venueFor(run).extraDrop) || 0) * 100;
   return round1(clamp(base + difficultyFor(run).extraDropModifier + contextModifiers(run, approachId).extra, 0, 100));
 }
@@ -652,6 +691,7 @@ function encounterStatus(run, riskAfter, approachId = 'steady') {
 }
 
 function acquisitionChance(run, approachId = 'steady') {
+  if (usesBalancedRules(run)) return raidSearchProbability(balanceInput(run, approachId));
   const difficulty = difficultyFor(run);
   const researchBonus = 4 * (skill(run, 'research') - 1);
   const context = contextModifiers(run, approachId).acquisition;
@@ -667,12 +707,14 @@ function acquisitionChance(run, approachId = 'steady') {
 }
 
 function searchRiskAfter(run, approachId = 'steady') {
+  if (usesBalancedRules(run)) return raidRiskAfterSearch(balanceInput(run, approachId));
   const growth = Math.max(1, venueFor(run).growth + difficultyFor(run).riskModifier + contextModifiers(run, approachId).risk);
   const result = Number(run.stats?.risk) + growth;
   return round1(clamp(result, 0, 100));
 }
 
 function exitProbabilities(run) {
+  if (usesBalancedRules(run)) return raidExtractionProbabilities(balanceInput(run));
   const v = venueFor(run);
   const risk = clamp(run.stats?.risk, 0, 100);
   const skillEngineering = skillBonus(skill(run, 'engineering'), 2, 8);
@@ -740,8 +782,12 @@ function computeProbabilities(run, approachId = 'steady') {
     encounterReason: encounter.reason,
     parts: {
       acquisition: {
-        base: 65,
+        base: usesBalancedRules(run) ? acquisition.base : 65,
         researchBonus: acquisition.researchBonus,
+        ...(usesBalancedRules(run) ? { gearBonus: acquisition.gear, familiarity: acquisition.familiarity,
+          riskPenalty: acquisition.riskPenalty, depthPenalty: acquisition.depthPenalty,
+          durationPenalty: acquisition.durationPenalty, fatiguePenalty: acquisition.fatiguePenalty,
+          loadPenalty: acquisition.loadPenalty } : {}),
         contextModifier: acquisition.context,
         difficultyModifier: d.acquisitionModifier,
         venueDifficulty: v.difficulty,
@@ -800,7 +846,7 @@ function expeditionState(run) {
   return {
     conditionId: safeId(state.conditionId, Object.keys(FIELD_CONDITIONS), 'arrival'),
     searchesInCondition: Math.floor(clamp(state.searchesInCondition, 0, 1)),
-    depth: Math.floor(clamp(state.depth, 0, 4)),
+    depth: usesBalancedRules(run) ? round1(clamp(state.depth, 0, 4)) : Math.floor(clamp(state.depth, 0, 4)),
     lastApproach: safeId(state.lastApproach, Object.keys(APPROACHES), 'steady'),
     effect: effectId && remainingSearches > 0 ? { id: effectId, remainingSearches } : null,
   };
@@ -832,7 +878,8 @@ function eventMomentum(event, success, choice = null) {
 function advanceExpedition(run, approachId) {
   const state = expeditionState(run);
   state.lastApproach = approachId;
-  state.depth = clamp(state.depth + APPROACHES[approachId].depth, 0, 4);
+  const depthDelta = usesBalancedRules(run) ? ({ cautious: -0.5, steady: 0.5, deep: 1 })[approachId] : APPROACHES[approachId].depth;
+  state.depth = clamp(state.depth + depthDelta, 0, 4);
   if (state.effect && --state.effect.remainingSearches <= 0) state.effect = null;
   state.searchesInCondition += 1;
   if (state.searchesInCondition >= 2) {
@@ -896,6 +943,7 @@ export function createProbabilityRaid(options = {}) {
     direction: Object.hasOwn(DIRECTIONS, options.direction) ? options.direction : 'llm',
     venueId,
     difficultyId,
+    stage: Math.floor(clamp(options.stage, 0, 7)),
     loadout,
     bagCap,
     bag,
@@ -920,13 +968,13 @@ export function createProbabilityRaid(options = {}) {
     history: [],
     log: [],
     result: null,
-    probabilityVersion: 3,
+    probabilityVersion: RAID_BALANCE_VERSION,
     ...(options.surprise === true ? { encounterVersion: 2, resolvedEventIds: [] } : {}),
     encounterPacing: { eligibleSearches: 0, dryStreak: 0, firstEventSeen: false },
     lastAction: null,
     expedition: { conditionId: 'arrival', searchesInCondition: 0, depth: 0, lastApproach: 'steady', effect: null },
   };
-  const startText = `开始${VENUES[venueId].name}远征，${DIFFICULTIES[difficultyId].name}难度；材料按地点自然分布。`;
+  const startText = `开始${VENUES[venueId].name}远征，${difficultyFor(run).name}难度；材料按地点自然分布。`;
   log(run, 'system', `${startText}出行费已在出发时扣除。`);
   return run;
 }
@@ -936,7 +984,7 @@ export function probabilitySetup(profile = null) {
   const loadout = normalizeLoadout(Object.values(profile?.loadout || {}));
   const research = profile?.research || {};
   const skills = skillLevels({ ...research, skills: research.skills || {} });
-  const difficultyRows = Object.entries(DIFFICULTIES).map(([id, difficulty]) => ({
+  const difficultyRows = Object.entries(RAID_DIFFICULTIES).map(([id, difficulty]) => ({
     id,
     name: difficulty.name,
     description: difficulty.description,
@@ -948,7 +996,7 @@ export function probabilitySetup(profile = null) {
   const venues = Object.entries(VENUES).map(([id, venue]) => {
     const difficultyPreviews = difficultyRows.map(difficulty => {
       const previewRun = createProbabilityRaid({ seed: 1, venue: id,
-        difficulty: difficulty.id, skills, loadout });
+        difficulty: difficulty.id, stage, skills, loadout });
       const probabilities = computeProbabilities(previewRun);
       return {
         difficultyId: difficulty.id,
@@ -1031,6 +1079,22 @@ function choiceEvidenceAvailable(run, choice) {
 
 function eventChoiceProbability(run, choice) {
   if (!choice.check) return 100;
+  if (usesBalancedRules(run)) {
+    const check = choice.check;
+    const bonuses = loadBonuses(run);
+    const neutral = run.event?.encounterVersion === 2;
+    const preparedMaterials = ({ npc: ['wind', 'coop'], resource: ['dataset', 'src_code'],
+      technical: ['src_code', 'compute'], route: ['wind'] })[run.event?.type] || [];
+    const preparation = neutral && (run.bag || []).some(id => preparedMaterials.includes(id)) ? 3 : 0;
+    return raidEventProbability({ ...balanceInput(run, expeditionState(run).lastApproach),
+      base: check.base, neutral, hasSkill: !!check.skill, skillLevel: check.skill ? skill(run, check.skill) : 1,
+      skillCap: check.cap, evidenceBonus: preparation + (check.evidenceBonus && choiceEvidenceAvailable(run, choice) ? check.evidenceBonus : 0),
+      gearBonus: check.gear ? (bonuses.event[check.gear] || 0) : 0,
+      communicationBonus: check.communication ? Math.min(check.communication, bonuses.communication) : 0,
+      trustBonus: check.trustPerPoint ? eventTrust(run, run.event) * check.trustPerPoint : 0,
+      eventDifficulty: eventDifficulty(run) + (Number(run.event?.difficulty) || 0) + (Number(check.difficulty) || 0),
+    });
+  }
   const check = choice.check;
   const skillLevel = check.skill ? skill(run, check.skill) : 1;
   const ability = check.skill ? skillBonus(skillLevel, check.perLevel || 0, check.cap || 0) : 0;
@@ -1418,7 +1482,7 @@ export function probabilityRaidView(run) {
   }
   return {
     mode: PROBABILITY_MODE,
-    probabilityVersion: 3,
+    probabilityVersion: usesBalancedRules(run) ? RAID_BALANCE_VERSION : 3,
     ...(run.encounterVersion === 2 ? { encounterVersion: 2 } : {}),
     raidId: run.raidId,
     revision: Math.max(0, Number(run.revision) || 0),
@@ -1426,7 +1490,7 @@ export function probabilityRaidView(run) {
     player: clone(run.player || {}),
     venue: { id: run.venueId, name: venueFor(run).name },
     difficulty: {
-      id: difficultyFor(run) === DIFFICULTIES[run.difficultyId] ? run.difficultyId : 'normal',
+      id: isProbabilityDifficulty(run.difficultyId) ? run.difficultyId : 'normal',
       name: difficultyFor(run).name,
       description: difficultyFor(run).description,
       acquisitionModifier: difficultyFor(run).acquisitionModifier,

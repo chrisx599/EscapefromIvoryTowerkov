@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCareer, hubAct, migrateCareer } from '../src/career.js';
 import { DIRECTIONS, PROJECTS, STAGES, normalizeResearch, researchAct, researchView } from '../src/research.js';
-import { experimentOutcome, reviewOutcome } from '../src/research-factors.js';
+import { experimentOutcome, reviewOutcome, legacyExperimentOutcome, legacyReviewOutcome } from '../src/research-factors.js';
 import { finishPaper } from './research-qa.mjs';
 
 const checked = (profile, action) => {
@@ -244,7 +244,7 @@ test('old direction matches retain their exact experiment and review effects on 
     const oldProject = { id: 'paper-1', type: 'replicate', direction, scope: 0, quality: 25, evidence: 0,
       preparation: 0, runs: 0, status: 'experiment', reviews: 0, submittedRuns: 0 };
     p.research = normalizeResearch({ ...p.research, project: oldProject });
-    const expected = experimentOutcome({ quality: 25, evidence: 0, engineering: 1, research: 1,
+    const expected = legacyExperimentOutcome({ quality: 25, evidence: 0, engineering: 1, research: 1,
       expression: 1, preparation: 0, equipment: 0, headroom: 0, experience: 0, topicFit, scope: 0, support: 0 }, draw);
     checked(p, 'experiment');
     assert.equal(p.research.project.quality, 25 + expected.qualityGain);
@@ -253,7 +253,7 @@ test('old direction matches retain their exact experiment and review effects on 
 
     p.research = normalizeResearch({ ...p.research, rng: seed, methods: { replicate: 0 }, skills: {},
       project: { ...oldProject, quality: 76, evidence: 65, runs: 2, submittedRuns: 2, status: 'submitted' } });
-    const review = reviewOutcome({ quality: 76, evidence: 65, expression: 1, experience: 0, topicFit }, draw, 'replicate');
+    const review = legacyReviewOutcome({ quality: 76, evidence: 65, expression: 1, experience: 0, topicFit }, draw, 'replicate');
     checked(p, 'review');
     assert.equal(p.research.project.status, review.status);
     assert.equal(p.research.project.status, topicFit ? 'ready' : 'revision');
@@ -266,7 +266,7 @@ test('new automatic-fit projects preserve deterministic experiment and review re
   checked(career.profile, 'start:evaluate');
   const restored = migrateCareer(JSON.stringify(career));
   assert.deepEqual(restored.profile.research, career.profile.research);
-  for (const action of ['experiment', 'experiment', 'submit', 'review']) {
+  for (const action of ['experiment', 'experiment', 'experiment', 'submit', 'review']) {
     checked(career.profile, action); checked(restored.profile, action);
     assert.deepEqual(restored.profile.research, career.profile.research);
     assert.deepEqual(restored.profile.stash, career.profile.stash);
@@ -274,17 +274,20 @@ test('new automatic-fit projects preserve deterministic experiment and review re
   }
 });
 
-test('default new careers publish and earn their first title within the starter budget without setup menus', () => {
+test('default new careers publish and earn their first promotion review within the starter budget without setup menus', () => {
   for (let seed = 1; seed <= 128; seed++) {
     const career = createCareer(seed * 7919);
     for (const id of ['dataset', 'src_code']) assert.equal(hubAct(career, `buy:${id}`).ok, true);
     const progress = finishPaper(career.profile, { start: 'replicate',
       act: action => hubAct(career, `research:${action}`),
-      onExperiment: () => { assert.equal(hubAct(career, 'buy:compute').ok, true, `seed ${seed}`); } });
+      onExperiment: project => { if (project.runs < 5) assert.equal(hubAct(career, 'buy:compute').ok, true, `seed ${seed}`); } });
     assert.ok(progress.runs <= 7, `seed ${seed} must have finite affordable repair`);
     assert.ok(career.profile.funding >= 90);
-    assert.equal(hubAct(career, 'research:promote').ok, true);
-    assert.equal(career.profile.research.stage, 1);
+    const beforeReview = career.profile.funding;
+    const review = hubAct(career, 'research:promote');
+    assert.equal(review.ok, true);
+    assert.equal(career.profile.research.stage, Number(review.promoted));
+    assert.equal(career.profile.funding, beforeReview + (review.promoted ? 180 : 0));
     assert.deepEqual(researchView(career.profile).directions, {});
     assert.deepEqual(researchView(career.profile).preparations, []);
   }

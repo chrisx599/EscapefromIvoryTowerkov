@@ -9,7 +9,8 @@ export function nextResearchAction(research) {
   if (project.status === 'ready') return 'publish';
   if (project.status === 'submitted') return 'review';
   assert.ok(['experiment', 'revision', 'rejected'].includes(project.status));
-  return project.runs >= 2 && project.runs > (project.submittedRuns || 0) ? 'submit' : 'experiment';
+  const minimumRuns = project.minimumRuns ?? (project.balanceVersion >= 2 ? 3 + (project.scope || 0) : 2);
+  return project.runs >= minimumRuns && project.runs > (project.submittedRuns || 0) ? 'submit' : 'experiment';
 }
 
 export function finishPaper(profile, { start = null, act = action => researchAct(profile, action), onExperiment = null } = {}) {

@@ -28,6 +28,7 @@ function fixture(papers = 0) {
   Object.assign(career.profile.stash, { dataset: 20, src_code: 20, compute: 100 });
   for (let index = 0; index < papers; index++) finishPaper(career.profile, { start: 'replicate' });
   for (const [index, paper] of career.profile.research.papers.entries()) paper.title = `不得展示的历史论文-${index + 1}-<独特内容&证据>`;
+  career.profile.research.rng = 1; // Controlled passing promotion draw: these fixtures test immutable paper totals.
   return career;
 }
 

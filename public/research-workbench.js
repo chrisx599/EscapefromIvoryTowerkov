@@ -38,6 +38,8 @@ export function renderResearchWorkbench({ hub = {}, items = hub.stash || [], cat
   const submit = action('submit');
   const promotion = action('promote');
   const promotionGoal = !project && Boolean(promotion && !promotion.disabled);
+  const promotionRetry = !project && Boolean(research.promotionReview?.lastOutcome && !research.promotionReview.retryReady);
+  const promotionFocus = promotionGoal || promotionRetry;
   const promotionReasons = research.promotionReasons || [];
   const starter = templates.find(row => row.id === 'replicate' && !row.disabled) || templates.find(row => !row.disabled) || templates.find(row => row.id === 'replicate') || templates[0];
 
@@ -55,9 +57,9 @@ export function renderResearchWorkbench({ hub = {}, items = hub.stash || [], cat
       || (project.status === 'ready' ? action('publish')
         : project.status === 'submitted' ? action('review')
           : submit && !submit.disabled ? submit : experiment || submit);
-  } else if (promotionGoal) {
-    state = 'promotion';
-    status = '晋升条件已齐';
+  } else if (promotionFocus) {
+    state = promotionRetry ? 'promotion-retry' : 'promotion';
+    status = promotionRetry ? '晋升待复评' : '可以申请晋升';
     goal = `晋升为${research.nextStage || '下一职称'}`;
     next = promotion;
   } else if (starter) {
@@ -71,14 +73,14 @@ export function renderResearchWorkbench({ hub = {}, items = hub.stash || [], cat
   }
 
   const isExperiment = next?.id === 'research:experiment';
-  const currentMaterials = project && isExperiment ? { compute: 1 + count(project.scope) } : !project && !promotionGoal ? starter?.materials || {} : {};
-  const currentCost = project && isExperiment ? count(project.experimentCost) : !project && !promotionGoal && starter ? count(starter.cost) : null;
-  const currentTemplate = !project && !promotionGoal ? starter : null;
+  const currentMaterials = project && isExperiment ? project.experimentMaterials || { compute: 1 + count(project.scope) } : !project && !promotionFocus ? starter?.materials || {} : {};
+  const currentCost = project && isExperiment ? count(project.experimentCost) : !project && !promotionFocus && starter ? count(starter.cost) : null;
+  const currentTemplate = !project && !promotionFocus ? starter : null;
   const materialAvailable = (id, template) => template?.materialCounts && Object.hasOwn(template.materialCounts, id) ? count(template.materialCounts[id]) : available(id);
   const missingMaterials = Object.entries(currentMaterials).filter(([id, need]) => materialAvailable(id, currentTemplate) < count(need));
   const blocked = Boolean(next?.disabled);
   const actionReason = next?.reason || '';
-  const actionLabel = row => ({ 'research:experiment': ['revision', 'rejected'].includes(project?.status) ? '补做实验' : '开展实验', 'research:submit': '整理并投稿', 'research:review': '查看审稿结果', 'research:publish': '确认录用', 'research:promote': '申请晋升' })[row?.id] || row?.name;
+  const actionLabel = row => ({ 'research:experiment': project?.experimentLabel || (['revision', 'rejected'].includes(project?.status) ? '补做实验' : '开展实验'), 'research:submit': '整理并投稿', 'research:review': '查看审稿结果', 'research:publish': '确认录用', 'research:promote': '申请晋升' })[row?.id] || row?.name;
   const renderAction = (row, primary = false) => row ? `<div class="${primary ? 'rw-primary-action' : 'rw-secondary-action'}">${button(row.id, primary ? actionLabel(row) : row.name, row.disabled, row.reason).replace('<button ', `<button${primary ? ` data-research-primary="true"${row.disabled && row.reason ? ' aria-describedby="research-next-reason"' : ''}` : ''} `)}</div>` : '';
 
   function materialsMarkup(materials, cost, compact = false, template = null) {
@@ -107,22 +109,23 @@ export function renderResearchWorkbench({ hub = {}, items = hub.stash || [], cat
     ? `<div class="rw-sources">${missingMaterials.some(([id]) => (hub.shop || []).some(item => item.id === id)) || needsEquipment ? workspaceButton('shop', needsEquipment ? '补齐实验设备' : '补齐材料') : ''}${needsEquipment ? workspaceButton('inventory', '查看已有设备') : ''}${workspaceButton('prepare', '出发搜集')}</div>` : '';
   const resourceBlock = Object.keys(currentMaterials).length || currentCost != null
     ? `<section class="rw-supply-section" aria-label="${project ? '本轮消耗' : '立项所需'}">${materialsMarkup(currentMaterials, currentCost, false, currentTemplate)}${sources}</section>` : '';
-  const nextText = blocked ? isExperiment ? '先补齐实验准备' : '先补齐立项准备'
-    : next?.id === 'research:experiment' ? ['revision', 'rejected'].includes(project?.status) ? '补做一轮，再次投稿' : count(project?.runs) ? '继续当前实验' : '开始第一轮实验'
+  const nextText = promotionRetry ? '带回一段新的经历'
+    : blocked ? isExperiment ? '先补齐实验准备' : '先补齐立项准备'
+    : next?.id === 'research:experiment' ? project?.supported ? '继续复核实验记录' : ['revision', 'rejected'].includes(project?.status) ? '补做一轮，再次投稿' : count(project?.runs) ? '继续当前实验' : '开始第一轮实验'
       : next?.id === 'research:submit' ? '实验记录已可投稿'
         : next?.id === 'research:review' ? '查看这次审稿'
           : next?.id === 'research:publish' ? '把这篇成果收入档案'
-            : promotionGoal ? '领取新职称与晋升支持' : next ? '开始这项研究' : '带回材料，再开课题';
-  const nextStep = `<div id="research-next-step" class="rw-next-step ${blocked ? 'is-blocked' : ''}"><div class="rw-next-copy"><span class="rw-kicker">下一步</span><strong>${escapeHtml(nextText)}</strong>${prerequisites}</div>${next ? renderAction(next, true) : workspaceButton('prepare', '前往备战')}</div>`;
+            : promotionGoal ? '提交本次晋升评审' : next ? '开始这项研究' : '带回材料，再开课题';
+  const nextStep = `<div id="research-next-step" class="rw-next-step ${blocked ? 'is-blocked' : ''}"><div class="rw-next-copy"><span class="rw-kicker">下一步</span><strong>${escapeHtml(nextText)}</strong>${prerequisites}</div>${promotionRetry ? workspaceButton('prepare', '出发搜集') : next ? renderAction(next, true) : workspaceButton('prepare', '前往备战')}</div>`;
 
-  const gapText = !research.nextStage ? '已达到最高职称' : promotionReasons.length ? `${promotionReasons[0]}${promotionReasons.length > 1 ? ` · 另 ${promotionReasons.length - 1} 项` : ''}` : project ? '完成当前课题后可申请晋升' : '晋升条件已齐';
+  const gapText = !research.nextStage ? '已达到最高职称' : promotionRetry ? '待补充研究经历' : promotionReasons.length ? `${promotionReasons[0]}${promotionReasons.length > 1 ? ` · 另 ${promotionReasons.length - 1} 项` : ''}` : project ? '完成当前课题后可申请晋升' : '晋升条件已齐';
   const titleProgress = `<div class="rw-heading"><div class="rw-title-path" aria-label="职称晋升"><div><span class="rw-kicker">当前职称</span><h2 id="research-stage">${escapeHtml(research.stageName || '本科生')}</h2></div>${research.nextStage ? `<span class="rw-title-arrow" aria-hidden="true">→</span><div class="rw-next-title"><span class="rw-kicker">下一职称</span><strong>${escapeHtml(research.nextStage)}</strong></div>` : '<span class="rw-career-complete">全职称达成</span>'}</div><p class="rw-career-gap">${escapeHtml(gapText)}</p></div>`;
-  const lastOutcome = typeof project?.lastOutcome === 'string' ? project.lastOutcome : '';
+  const lastOutcome = typeof project?.lastOutcome === 'string' ? project.lastOutcome : research.promotionReview?.lastOutcome ? '本次晋升评审未通过' : '';
   const outcome = lastOutcome ? `<p class="rw-last-outcome" data-research-outcome><span>上次结果</span>${escapeHtml(lastOutcome)}</p>` : '';
   const alternateActions = project ? actions.filter(row => !['research:abandon', next?.id].includes(row.id)) : [];
   const projectDetails = project ? `<details data-research-detail="project" class="rw-details rw-project-details"><summary><span>实验记录与操作</span><small>${number(project.runs)} 轮 · ${number(project.reviews)} 次审稿</small></summary><div>${project.evidenceSummary ? `<p class="rw-muted" data-research-evidence>${escapeHtml(project.evidenceSummary)}</p>` : ''}${alternateActions.length ? `<div class="rw-other-actions">${alternateActions.map(row => `<div>${renderAction(row)}${row.reason ? `<small class="rw-reason">${escapeHtml(row.reason)}</small>` : ''}</div>`).join('')}</div>` : '<p class="rw-muted">当前课题正在等待下一步。</p>'}</div></details>` : '';
-  const otherTemplates = promotionGoal ? templates : templates.filter(row => row.id !== starter?.id);
-  const templateDetails = !project && otherTemplates.length ? `<details data-research-detail="templates" class="rw-details rw-template-details"><summary><span>${promotionGoal ? '开始新课题' : '其他课题'}</span><small>${otherTemplates.length} 项</small></summary><div class="rw-template-options">${otherTemplates.map(templateMarkup).join('')}</div></details>` : '';
+  const otherTemplates = promotionFocus ? templates : templates.filter(row => row.id !== starter?.id);
+  const templateDetails = !project && otherTemplates.length ? `<details data-research-detail="templates" class="rw-details rw-template-details"><summary><span>${promotionFocus ? '开始新课题' : '其他课题'}</span><small>${otherTemplates.length} 项</small></summary><div class="rw-template-options">${otherTemplates.map(templateMarkup).join('')}</div></details>` : '';
   const attributes = `<dl class="rw-attributes" aria-label="研究属性"><div data-research-attribute="engineering" title="工程等级影响实验结果、课题门槛与晋升"><dt>工程 <b>Lv.${number(research.skills?.engineering ?? 1)}</b></dt><dd>实验执行</dd></div><div data-research-attribute="research" title="研究等级影响实验质量、证据积累与晋升"><dt>研究 <b>Lv.${number(research.skills?.research ?? 1)}</b></dt><dd>质量与证据</dd></div><div data-research-attribute="expression" title="表达等级影响审稿结果与晋升"><dt>表达 <b>Lv.${number(research.skills?.expression ?? 1)}</b></dt><dd>审稿与晋升</dd></div></dl>`;
   const ladder = `<ol class="rw-title-ladder" aria-label="完整职称进度">${STAGE_NAMES.map((name, i) => `<li class="${i < count(research.stage) ? 'is-complete' : i === count(research.stage) ? 'is-current' : ''}"${i === count(research.stage) ? ' aria-current="step"' : ''}>${escapeHtml(name)}</li>`).join('')}</ol>`;
   const promotionDetails = `<details data-research-detail="promotion" class="rw-details"><summary><span>晋升条件</span><small>${!research.nextStage ? '全部达成' : promotionReasons.length ? `${promotionReasons.length} 项待完成` : project ? '待课题完成' : '已齐'}</small></summary><div class="rw-promotion">${ladder}<p class="rw-muted">已录用 ${papers.length} 篇 · 发表成果 ${number(hub.achievement)}</p>${promotionReasons.length ? `<ul>${promotionReasons.map(reason => `<li>${escapeHtml(reason)}</li>`).join('')}</ul>` : `<p class="rw-muted">${research.nextStage ? project ? '完成当前课题后可申请晋升。' : '晋升条件已齐。' : '你已达到最高职称。'}</p>`}${!promotionGoal ? renderPromotionPreview(research.promotionPreview) : ''}${!project && promotion && !promotionGoal ? renderAction(promotion) : ''}</div></details>`;

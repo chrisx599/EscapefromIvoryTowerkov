@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCareer, careerView, hubAct, migrateCareer, deployProbability } from '../src/career.js';
 import { STAGES } from '../src/research.js';
-import { finishPaper } from './research-qa.mjs';
+import { finishPaper, nextResearchAction } from './research-qa.mjs';
 
 const action = (career, verb) => hubAct(career, `research:${verb}`);
 function supplied(seed = 123456789) {
@@ -59,6 +59,10 @@ test('experiments consume compute, reload deterministically, and reward publicat
   assert.equal(career.profile.achievement, 0);
   action(career, 'review');
   assert.equal(career.profile.achievement, 0);
+  while (career.profile.research.project.status !== 'ready') {
+    const next = nextResearchAction(career.profile.research);
+    assert.equal(action(career, next).ok, true);
+  }
   const funds = career.profile.funding;
   assert.equal(action(career, 'publish').ok, true);
   assert.equal(career.profile.achievement, 30);
@@ -71,7 +75,8 @@ test('experiments consume compute, reload deterministically, and reward publicat
 
 test('rejections require new experiments before resubmission and cannot farm expression', () => {
   const career = supplied();
-  action(career, 'start:evaluate'); action(career, 'experiment'); action(career, 'experiment');
+  action(career, 'start:evaluate');
+  while (nextResearchAction(career.profile.research) === 'experiment') action(career, 'experiment');
   career.profile.research.project.quality = 25;
   action(career, 'submit'); action(career, 'review');
   assert.equal(career.profile.research.project.status, 'rejected');
@@ -169,7 +174,7 @@ test('an old six-run rejected project can recover without surrendering its prior
   const old = supplied(61728);
   action(old, 'start:replicate');
   Object.assign(old.profile.research.project, { quality: 15, runs: 6, submittedRuns: 6, reviews: 2, status: 'rejected' });
-  for (const key of ['evidence', 'successfulRuns', 'setbacks', 'lastOutcome', 'preparation']) delete old.profile.research.project[key];
+  for (const key of ['balanceVersion', 'evidence', 'successfulRuns', 'setbacks', 'lastOutcome', 'preparation']) delete old.profile.research.project[key];
   const career = migrateCareer(JSON.stringify(old));
   const before = structuredClone(career.profile.research.project);
   assert.equal(before.runs, 6);
@@ -184,4 +189,27 @@ test('an old six-run rejected project can recover without surrendering its prior
   assert.equal(career.profile.research.papers[0].id, before.id, 'the existing project is repaired, not silently abandoned or replaced');
   assert.equal(career.profile.achievement, 30);
   assert.equal(career.profile.research.project, null);
+});
+
+test('research flavor has broad outcome-specific variety without mutating saved state or RNG', async () => {
+  const { researchNarrative } = await import('../src/research-narratives.js');
+  const expected = { success: 8, setback: 8, support: 6, accepted: 6,
+    supportedReview: 4, revision: 6, rejected: 6, published: 8 };
+  for (const [kind, count] of Object.entries(expected)) {
+    const lines = new Set();
+    for (let i = 0; i < 400; i++) {
+      const research = { rngState: i * 7919 };
+      const project = { id: `paper-${i}`, type: 'replicate', runs: i % 8, reviews: i % 3 };
+      const snapshot = JSON.stringify({ research, project });
+      const text = researchNarrative(kind, research, project);
+      lines.add(text);
+      assert.equal(researchNarrative(kind, research, project), text);
+      assert.equal(JSON.stringify({ research, project }), snapshot);
+      if (kind === 'revision') assert.match(text, /需要返修/);
+      if (kind === 'rejected') assert.match(text, /暂未录用/);
+      if (kind === 'accepted') assert.match(text, /审稿通过/);
+      if (kind === 'published') assert.match(text, /正式发表/);
+    }
+    assert.equal(lines.size, count, kind);
+  }
 });
